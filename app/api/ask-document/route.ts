@@ -10,11 +10,11 @@ import {
 } from '@earendil-works/pi-ai/providers/openrouter';
 
 import fs from 'fs/promises';
+import { randomUUID } from 'crypto';
 
 import {
   documentTools,
   executeWorkspaceTool,
-  saveResultTool,
 } from '@/lib/document-tools';
 
 import {
@@ -25,104 +25,406 @@ import {
   type WorkspaceSession,
 } from '@/lib/pi-workspace';
 
-export const runtime =
-  'nodejs';
+export const runtime = 'nodejs';
 
-const models =
-  createModels();
+const models = createModels();
 
 models.setProvider(
   openrouterProvider()
 );
 
-const MAX_TOOL_CALLS =
-  12;
+const MAX_TOOL_CALLS = 40;
 
-const FORCE_SAVE_AFTER =
-  5;
+const THINKING_LEVEL = 'high';
+
+type TraceEventType =
+  | 'session'
+  | 'model_change'
+  | 'thinking_level_change'
+  | 'message'
+  | 'session.started'
+  | 'model.started'
+  | 'agent.trace'
+  | 'tool.started'
+  | 'tool.completed'
+  | 'result.saved'
+  | 'session.completed'
+  | 'session.failed';
 
 type TraceEvent = {
+  type: TraceEventType;
+  id: string;
+  parentId: string | null;
   timestamp: string;
-
-  type:
-    | 'session.started'
-    | 'model.started'
-    | 'tool.started'
-    | 'tool.completed'
-    | 'result.saved'
-    | 'session.completed'
-    | 'session.failed';
-
-  data:
-    Record<
-      string,
-      unknown
-    >;
+  [key: string]: unknown;
 };
 
 function serializableContext(
   context: Context
 ): Context {
   return {
-    systemPrompt:
-      context.systemPrompt,
-
-    messages:
-      context.messages,
+    systemPrompt: context.systemPrompt,
+    messages: context.messages,
   };
 }
 
 function toolCallsFromMessage(
-  message:
-    AssistantMessage
+  message: AssistantMessage
 ): ToolCall[] {
   return message.content.filter(
     (
       block
     ): block is ToolCall =>
-      block.type ===
-      'toolCall'
+      block.type === 'toolCall'
   );
+}
+
+const MAX_ASSISTANT_TRACE_TEXT_LENGTH = 2000;
+
+function sanitizeAssistantToolArguments(
+  block: ToolCall
+): Record<string, unknown> {
+  const args =
+    block.arguments as Record<
+      string,
+      unknown
+    >;
+
+  if (
+    block.name === 'grep_document'
+  ) {
+    const safeArgs: Record<
+      string,
+      unknown
+    > = {};
+
+    if (
+      typeof args.query === 'string'
+    ) {
+      safeArgs.query = args.query;
+    }
+
+    if (
+      args.maxMatches !== undefined
+    ) {
+      safeArgs.maxMatches =
+        args.maxMatches;
+    }
+
+    return safeArgs;
+  }
+
+  if (
+    block.name === 'read_document'
+  ) {
+    const safeArgs: Record<
+      string,
+      unknown
+    > = {};
+
+    if (
+      args.offset !== undefined
+    ) {
+      safeArgs.offset = args.offset;
+    }
+
+    if (
+      args.limit !== undefined
+    ) {
+      safeArgs.limit = args.limit;
+    }
+
+    return safeArgs;
+  }
+
+  if (
+    block.name === 'save_result'
+  ) {
+    return {
+      fields: [
+        'Reporting Period',
+        'Aircraft Serial Number',
+        'Aircraft Type',
+        'Total Month Cycles',
+        'Total Month Hours',
+        'Total New Cycles',
+        'Total New Time',
+        'Component List',
+      ],
+    };
+  }
+
+  return {};
+}
+
+function sanitizeAssistantContent(
+  content: AssistantMessage['content']
+): Record<string, unknown>[] {
+  return content.map((block) => {
+    if (block.type === 'text') {
+      return {
+        type: 'text',
+
+        text:
+          block.text.slice(
+            0,
+            MAX_ASSISTANT_TRACE_TEXT_LENGTH
+          ),
+      };
+    }
+
+    if (block.type === 'toolCall') {
+      return {
+        type: 'toolCall',
+
+        id:
+          block.id,
+
+        name:
+          block.name,
+
+        arguments:
+          sanitizeAssistantToolArguments(
+            block
+          ),
+      };
+    }
+
+    if (block.type === 'thinking') {
+      return {
+        type: 'thinking',
+
+        hasThinking:
+          Boolean(block.thinking),
+
+        thinkingCharacters:
+          block.thinking?.length ?? 0,
+
+        hasThinkingSignature:
+          Boolean(
+            block.thinkingSignature
+          ),
+
+        redacted:
+          block.redacted ?? false,
+      };
+    }
+
+    return {
+      type: 'unknown',
+    };
+  });
+}
+
+type AgentTraceData = {
+  objective: string;
+
+  evidence: string[];
+
+  missing: string[];
+
+  action: {
+    tool:
+      | 'grep_document'
+      | 'read_document'
+      | 'save_result'
+      | null;
+
+    query?: string;
+
+    offset?: number;
+
+    limit?: number;
+  };
+
+  reason: string;
+
+  uncertainty: string;
+
+  next: string;
+};
+
+const MAX_TRACE_STRING_LENGTH = 300;
+const MAX_TRACE_ARRAY_ITEMS = 12;
+
+function sanitizeTraceString(
+  value: unknown
+): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_TRACE_STRING_LENGTH);
+}
+
+function sanitizeTraceStringArray(
+  value: unknown
+): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .slice(0, MAX_TRACE_ARRAY_ITEMS)
+    .map(sanitizeTraceString)
+    .filter(Boolean);
+}
+
+function sanitizeTraceNumber(
+  value: unknown
+): number | undefined {
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value)
+  ) {
+    return undefined;
+  }
+
+  return value;
+}
+
+function sanitizeTraceTool(
+  value: unknown
+): AgentTraceData['action']['tool'] {
+  if (
+    value === 'grep_document' ||
+    value === 'read_document' ||
+    value === 'save_result'
+  ) {
+    return value;
+  }
+
+  return null;
+}
+
+function agentTraceFromMessage(
+  message: AssistantMessage
+): AgentTraceData | null {
+  const textBlocks =
+    message.content
+      .filter(
+        (block) =>
+          block.type === 'text'
+      )
+      .map((block) =>
+        'text' in block
+          ? String(block.text)
+          : ''
+      )
+      .join('\n');
+
+  if (!textBlocks.trim()) {
+    return null;
+  }
+
+  const match =
+    textBlocks.match(
+      /\[AGENT_TRACE\]([\s\S]*?)\[\/AGENT_TRACE\]/
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(
+      match[1].trim()
+    ) as Record<string, unknown>;
+
+    const action =
+      typeof parsed.action === 'object' &&
+      parsed.action !== null
+        ? (parsed.action as Record<string, unknown>)
+        : {};
+
+    const sanitized: AgentTraceData = {
+      objective: sanitizeTraceString(
+        parsed.objective
+      ),
+
+      evidence: sanitizeTraceStringArray(
+        parsed.evidence
+      ),
+
+      missing: sanitizeTraceStringArray(
+        parsed.missing
+      ),
+
+      action: {
+        tool: sanitizeTraceTool(
+          action.tool
+        ),
+      },
+
+      reason: sanitizeTraceString(
+        parsed.reason
+      ),
+
+      uncertainty: sanitizeTraceString(
+        parsed.uncertainty
+      ),
+
+      next: sanitizeTraceString(
+        parsed.next
+      ),
+    };
+
+    const query = sanitizeTraceString(
+      action.query
+    );
+
+    if (query) {
+      sanitized.action.query = query;
+    }
+
+    const offset = sanitizeTraceNumber(
+      action.offset
+    );
+
+    if (offset !== undefined) {
+      sanitized.action.offset = offset;
+    }
+
+    const limit = sanitizeTraceNumber(
+      action.limit
+    );
+
+    if (limit !== undefined) {
+      sanitized.action.limit = limit;
+    }
+
+    return sanitized;
+  } catch {
+    return null;
+  }
 }
 
 function buildSafeToolStartedData(
   toolCall: ToolCall
-): Record<
-  string,
-  unknown
-> {
-  const data:
-    Record<
-      string,
-      unknown
-    > = {
-    tool:
-      toolCall.name,
+): Record<string, unknown> {
+  const data: Record<string, unknown> = {
+    tool: toolCall.name,
   };
 
   const args =
     toolCall.arguments as
-      | Record<
-          string,
-          unknown
-        >
+      | Record<string, unknown>
       | undefined;
 
   if (
-    toolCall.name ===
-    'grep_document'
+    toolCall.name === 'grep_document'
   ) {
     if (
-      typeof args?.query ===
-      'string'
+      typeof args?.query === 'string'
     ) {
-      data.query =
-        args.query;
+      data.query = args.query;
     }
 
     if (
-      args?.maxMatches !==
-      undefined
+      args?.maxMatches !== undefined
     ) {
       data.maxMatches =
         args.maxMatches;
@@ -130,36 +432,33 @@ function buildSafeToolStartedData(
   }
 
   if (
-    toolCall.name ===
-    'read_document'
+    toolCall.name === 'read_document'
   ) {
     if (
-      args?.offset !==
-      undefined
+      args?.offset !== undefined
     ) {
-      data.offset =
-        args.offset;
+      data.offset = args.offset;
     }
 
     if (
-      args?.limit !==
-      undefined
+      args?.limit !== undefined
     ) {
-      data.limit =
-        args.limit;
+      data.limit = args.limit;
     }
   }
 
   if (
-    toolCall.name ===
-    'save_result'
+    toolCall.name === 'save_result'
   ) {
     data.fields = [
+      'Reporting Period',
+      'Aircraft Serial Number',
+      'Aircraft Type',
       'Total Month Cycles',
       'Total Month Hours',
       'Total New Cycles',
       'Total New Time',
-      'Aircraft Type',
+      'Component List',
     ];
   }
 
@@ -169,8 +468,7 @@ function buildSafeToolStartedData(
 export async function POST(
   request: Request
 ) {
-  let workspaceId:
-    string;
+  let workspaceId: string;
 
   try {
     const body =
@@ -197,9 +495,7 @@ export async function POST(
 
   const responseStream =
     new ReadableStream({
-      async start(
-        controller
-      ) {
+      async start(controller) {
         let session:
           | WorkspaceSession
           | null = null;
@@ -216,9 +512,10 @@ export async function POST(
           );
         }
 
+        let parentEventId: string | null = null;
+
         async function trace(
-          type:
-            TraceEvent['type'],
+          type: TraceEventType,
 
           data:
             Record<
@@ -230,15 +527,107 @@ export async function POST(
             return;
           }
 
-          const event:
-            TraceEvent = {
-            timestamp:
-              new Date().toISOString(),
+          const eventId =
+            randomUUID().slice(0, 8);
 
-            type,
+          const timestamp =
+            new Date().toISOString();
 
-            data,
-          };
+          let event:
+            TraceEvent;
+
+          if (type === 'message') {
+            const {
+              role,
+              content,
+              timestamp: messageTimestamp,
+              api,
+              provider,
+              model,
+              usage,
+              stopReason,
+              rawStopReason,
+              responseId,
+              providerThinkingLevel,
+              ...messageDetails
+            } = data;
+
+            event = {
+              type,
+              id: eventId,
+              parentId: parentEventId,
+              timestamp,
+              message: {
+                role,
+                content,
+                ...messageDetails,
+                timestamp:
+                  messageTimestamp ??
+                  Date.now(),
+              },
+            };
+
+            if (api !== undefined) {
+              event.api = api;
+            }
+
+            if (provider !== undefined) {
+              event.provider = provider;
+            }
+
+            if (model !== undefined) {
+              event.model = model;
+            }
+
+            if (usage !== undefined) {
+              event.usage = usage;
+            }
+
+            if (stopReason !== undefined) {
+              event.stopReason = stopReason;
+            }
+
+            if (rawStopReason !== undefined) {
+              event.rawStopReason = rawStopReason;
+            }
+
+            if (responseId !== undefined) {
+              event.responseId = responseId;
+            }
+
+            if (providerThinkingLevel !== undefined) {
+              event.providerThinkingLevel =
+                providerThinkingLevel;
+            }
+          } else if (type === 'session') {
+            event = {
+              type,
+              id: String(
+                data.id ??
+                  session.sessionId
+              ),
+              parentId: null,
+              timestamp,
+              version:
+                data.version ?? 3,
+              cwd:
+                resolveWorkspacePath(
+                  session.workspaceId
+                ),
+            };
+          } else {
+            event = {
+              type,
+              id: eventId,
+              parentId:
+                type ===
+                  'model_change'
+                  ? null
+                  : parentEventId,
+              timestamp,
+              ...data,
+            };
+          }
 
           const tracePath =
             resolveWorkspacePath(
@@ -249,26 +638,33 @@ export async function POST(
 
           await fs.appendFile(
             tracePath,
-
             `${JSON.stringify(
               event
             )}\n`,
-
             'utf-8'
           );
+
+          parentEventId =
+            event.id;
 
           send(event);
         }
 
         try {
-          // -----------------------------
-          // Load session
-          // -----------------------------
-
           session =
             await readSession(
               workspaceId
             );
+
+          await trace(
+            'session',
+            {
+              version: 3,
+
+              id:
+                session.sessionId,
+            }
+          );
 
           session.status =
             'running';
@@ -286,18 +682,17 @@ export async function POST(
 
               sessionId:
                 session.sessionId,
+
+              originalFilename:
+                session.originalFilename,
             }
           );
 
-          // -----------------------------
-          // Select model
-          // -----------------------------
-
           const model =
-            models.getModel(
-              'openrouter',
-              'openai/gpt-4o-mini'
-            );
+           models.getModel(
+            'openrouter',
+            'openai/o4-mini-high'
+          );
 
           if (!model) {
             throw new Error(
@@ -305,50 +700,59 @@ export async function POST(
             );
           }
 
-          let context:
-            Context = {
-            ...session.context,
+          await trace(
+            'model_change',
+            {
+              provider:
+                'openrouter',
 
-            tools:
-              documentTools,
+              modelId:
+                model.id,
+            }
+          );
+
+          await trace(
+            'thinking_level_change',
+            {
+              thinkingLevel:
+                THINKING_LEVEL,
+            }
+          );
+
+          let context: Context = {
+            ...session.context,
+            tools: documentTools,
           };
 
-          let toolCallCount =
-            0;
-
-          let nonTerminalToolCount =
-            0;
+          let toolCallCount = 0;
 
           let savedResult:
             unknown = null;
-
-          // -----------------------------
-          // Pi tool loop
-          // -----------------------------
 
           while (
             toolCallCount <
             MAX_TOOL_CALLS
           ) {
-            // After enough read/grep operations,
-            // only expose save_result.
-            if (
-              nonTerminalToolCount >=
-              FORCE_SAVE_AFTER
-            ) {
-              context.tools = [
-                saveResultTool,
-              ];
-            } else {
-              context.tools =
-                documentTools;
-            }
+            context.tools =
+              documentTools;
 
             await trace(
               'model.started',
               {
                 model:
                   model.id,
+
+                provider:
+                  model.provider,
+
+                messages:
+                  context.messages.length,
+
+                availableTools:
+                  context.tools.map(
+                    (tool) =>
+                      tool.name
+                  ),
               }
             );
 
@@ -359,6 +763,9 @@ export async function POST(
                 {
                   sessionId:
                     session.sessionId,
+
+                  reasoningEffort:
+                    'high',
                 }
               );
 
@@ -390,7 +797,55 @@ export async function POST(
             finalMessage ??=
               await stream.result();
 
-            // Store assistant response
+            await trace(
+              'message',
+              {
+                role:
+                  finalMessage.role,
+
+                content:
+                  sanitizeAssistantContent(
+                    finalMessage.content
+                  ),
+
+                api:
+                  finalMessage.api,
+
+                provider:
+                  finalMessage.provider,
+
+                model:
+                  finalMessage.model,
+
+                usage:
+                  finalMessage.usage,
+
+                stopReason:
+                  finalMessage.stopReason,
+
+                rawStopReason:
+                  finalMessage.rawStopReason,
+
+                responseId:
+                  finalMessage.responseId,
+
+                providerThinkingLevel:
+                  finalMessage.providerThinkingLevel,
+              }
+            );
+
+            const agentTrace =
+              agentTraceFromMessage(
+                finalMessage
+              );
+
+            if (agentTrace) {
+              await trace(
+                'agent.trace',
+                agentTrace
+              );
+            }
+
             context.messages.push(
               finalMessage
             );
@@ -431,10 +886,6 @@ export async function POST(
               );
             }
 
-            // -----------------------------
-            // Execute tools
-            // -----------------------------
-
             for (
               const toolCall
               of toolCalls
@@ -464,7 +915,26 @@ export async function POST(
                     toolCall
                   );
 
-                // Feed tool result back to Pi
+                await trace(
+                  'message',
+                  {
+                    role:
+                      'toolResult',
+
+                    toolCallId:
+                      toolCall.id,
+
+                    toolName:
+                      toolCall.name,
+
+                    details:
+                      execution.summary,
+
+                    isError:
+                      false,
+                  }
+                );
+
                 context.messages.push(
                   {
                     role:
@@ -517,16 +987,6 @@ export async function POST(
                 );
 
                 if (
-                  !execution.terminal
-                ) {
-                  nonTerminalToolCount++;
-                }
-
-                // -----------------------------
-                // save_result completed
-                // -----------------------------
-
-                if (
                   execution.terminal
                 ) {
                   const resultPath =
@@ -566,12 +1026,6 @@ export async function POST(
                   await trace(
                     'session.completed',
                     {
-                      workspaceId:
-                        session.workspaceId,
-
-                      result:
-                        savedResult,
-
                       toolCalls:
                         toolCallCount,
 
@@ -587,16 +1041,33 @@ export async function POST(
 
                   return;
                 }
-              } catch (
-                error
-              ) {
+              } catch (error) {
                 const message =
                   error
                     instanceof Error
                     ? error.message
                     : 'Tool execution failed.';
 
-                // Send failure back into Pi
+                await trace(
+                  'message',
+                  {
+                    role:
+                      'toolResult',
+
+                    toolCallId:
+                      toolCall.id,
+
+                    toolName:
+                      toolCall.name,
+
+                    isError:
+                      true,
+
+                    error:
+                      message,
+                  }
+                );
+
                 context.messages.push(
                   {
                     role:
@@ -657,8 +1128,7 @@ export async function POST(
           }
         } catch (error) {
           const message =
-            error
-              instanceof Error
+            error instanceof Error
               ? error.message
               : 'Unknown extraction error';
 

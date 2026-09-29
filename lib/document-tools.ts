@@ -11,6 +11,10 @@ import {
   resolveWorkspacePath,
 } from '@/lib/pi-workspace';
 
+// --------------------------------
+// Common field schema
+// --------------------------------
+
 const FIELD_SCHEMA = Type.Object(
   {
     value: Type.Union([
@@ -27,6 +31,33 @@ const FIELD_SCHEMA = Type.Object(
     additionalProperties: false,
   }
 );
+
+// --------------------------------
+// Component schema
+// --------------------------------
+
+const COMPONENT_SCHEMA = Type.Object(
+  {
+    type: Type.String(),
+
+    serialNumber: Type.Union([
+      Type.String(),
+      Type.Null(),
+    ]),
+
+    confidence: Type.Number({
+      minimum: 0,
+      maximum: 100,
+    }),
+  },
+  {
+    additionalProperties: false,
+  }
+);
+
+// --------------------------------
+// read_document
+// --------------------------------
 
 export const readDocumentTool: Tool = {
   name: 'read_document',
@@ -50,6 +81,10 @@ export const readDocumentTool: Tool = {
     }
   ),
 };
+
+// --------------------------------
+// grep_document
+// --------------------------------
 
 export const grepDocumentTool: Tool = {
   name: 'grep_document',
@@ -77,19 +112,44 @@ export const grepDocumentTool: Tool = {
   ),
 };
 
+// --------------------------------
+// save_result
+// --------------------------------
+
 export const saveResultTool: Tool = {
   name: 'save_result',
 
   description:
-    'Validate and save the final aircraft extraction. Use null and confidence 0 when a value is not found.',
+    'Validate and save the final aircraft extraction. Extract reporting period, aircraft serial number, aircraft utilization fields, aircraft type, and all identifiable aircraft components. Use null and confidence 0 when a value cannot be found.',
 
   parameters: Type.Object(
     {
-      'Total Month Cycles': FIELD_SCHEMA,
-      'Total Month Hours': FIELD_SCHEMA,
-      'Total New Cycles': FIELD_SCHEMA,
-      'Total New Time': FIELD_SCHEMA,
+      // NEW
+      'Reporting Period': FIELD_SCHEMA,
+
+      // NEW
+      'Aircraft Serial Number':
+        FIELD_SCHEMA,
+
+      // Existing
       'Aircraft Type': FIELD_SCHEMA,
+
+      'Total Month Cycles':
+        FIELD_SCHEMA,
+
+      'Total Month Hours':
+        FIELD_SCHEMA,
+
+      'Total New Cycles':
+        FIELD_SCHEMA,
+
+      'Total New Time':
+        FIELD_SCHEMA,
+
+      // NEW
+      'Component List': Type.Array(
+        COMPONENT_SCHEMA
+      ),
     },
     {
       additionalProperties: false,
@@ -102,38 +162,103 @@ export const saveResultTool: Tool = {
   },
 };
 
+// --------------------------------
+// Tools exposed to Pi
+// --------------------------------
+
 export const documentTools = [
   readDocumentTool,
   grepDocumentTool,
   saveResultTool,
 ];
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isSuspiciousPartialSerial(
+  value: string
+) {
+  const normalized = value.trim();
+
+  return (
+    /^P-?\d?$/i.test(normalized) ||
+    /^MDG$/i.test(normalized) ||
+    /^\d{1,3}$/.test(normalized) ||
+    /-$/.test(normalized)
+  );
+}
+
+function serialAppearsAsCompleteToken(
+  document: string,
+  serialNumber: string
+) {
+  const escaped = escapeRegExp(
+    serialNumber.trim()
+  );
+
+  const pattern = new RegExp(
+    `(^|[^A-Za-z0-9-])${escaped}($|[^A-Za-z0-9-])`,
+    'i'
+  );
+
+  return pattern.test(document);
+}
+
+// --------------------------------
+// Tool result type
+// --------------------------------
+
 export type ToolExecution = {
   result: unknown;
-  summary: Record<string, unknown>;
+
+  summary: Record<
+    string,
+    unknown
+  >;
+
   terminal: boolean;
 };
+
+// --------------------------------
+// Execute workspace tool
+// --------------------------------
 
 export async function executeWorkspaceTool(
   workspaceId: string,
   toolCall: ToolCall
 ): Promise<ToolExecution> {
-  const args = validateToolCall(
-    documentTools,
-    toolCall
-  ) as Record<string, unknown>;
 
-  // --------------------------------
+  const args =
+    validateToolCall(
+      documentTools,
+      toolCall
+    ) as Record<
+      string,
+      unknown
+    >;
+
+  // =================================
   // read_document
-  // --------------------------------
-  if (toolCall.name === 'read_document') {
-    const offset = Number(args.offset);
-    const requestedLimit = Number(args.limit);
+  // =================================
+
+  if (
+    toolCall.name ===
+    'read_document'
+  ) {
+
+    const offset =
+      Number(args.offset);
+
+    const requestedLimit =
+      Number(args.limit);
 
     if (
       !Number.isInteger(offset) ||
       offset < 0 ||
-      !Number.isInteger(requestedLimit) ||
+      !Number.isInteger(
+        requestedLimit
+      ) ||
       requestedLimit < 1
     ) {
       throw new Error(
@@ -141,10 +266,11 @@ export async function executeWorkspaceTool(
       );
     }
 
-    const limit = Math.min(
-      requestedLimit,
-      12000
-    );
+    const limit =
+      Math.min(
+        requestedLimit,
+        12000
+      );
 
     const documentPath =
       resolveWorkspacePath(
@@ -159,7 +285,10 @@ export async function executeWorkspaceTool(
         'utf-8'
       );
 
-    if (offset > document.length) {
+    if (
+      offset >
+      document.length
+    ) {
       throw new Error(
         'read_document offset is beyond the document length.'
       );
@@ -172,10 +301,12 @@ export async function executeWorkspaceTool(
       );
 
     const nextOffset =
-      offset + content.length;
+      offset +
+      content.length;
 
     const endOfDocument =
-      nextOffset >= document.length;
+      nextOffset >=
+      document.length;
 
     return {
       result: {
@@ -188,8 +319,10 @@ export async function executeWorkspaceTool(
       summary: {
         offset,
         nextOffset,
+
         returnedCharacters:
           content.length,
+
         endOfDocument,
       },
 
@@ -197,19 +330,31 @@ export async function executeWorkspaceTool(
     };
   }
 
-  // --------------------------------
+  // =================================
   // grep_document
-  // --------------------------------
-  if (toolCall.name === 'grep_document') {
-    const query = String(args.query);
+  // =================================
 
-    const maxMatches = Math.min(
-      Number(args.maxMatches ?? 10),
-      20
-    );
+  if (
+    toolCall.name ===
+    'grep_document'
+  ) {
+
+    const query =
+      String(args.query);
+
+    const maxMatches =
+      Math.min(
+        Number(
+          args.maxMatches ??
+          10
+        ),
+        20
+      );
 
     if (
-      !Number.isInteger(maxMatches) ||
+      !Number.isInteger(
+        maxMatches
+      ) ||
       maxMatches < 1
     ) {
       throw new Error(
@@ -217,7 +362,9 @@ export async function executeWorkspaceTool(
       );
     }
 
-    if (!query.trim()) {
+    if (
+      !query.trim()
+    ) {
       throw new Error(
         'grep_document query is required.'
       );
@@ -250,15 +397,19 @@ export async function executeWorkspaceTool(
     let searchFrom = 0;
 
     while (
-      matches.length < maxMatches
+      matches.length <
+      maxMatches
     ) {
+
       const matchOffset =
         lowerDocument.indexOf(
           lowerQuery,
           searchFrom
         );
 
-      if (matchOffset === -1) {
+      if (
+        matchOffset === -1
+      ) {
         break;
       }
 
@@ -271,6 +422,7 @@ export async function executeWorkspaceTool(
       const excerptEnd =
         Math.min(
           document.length,
+
           matchOffset +
             query.length +
             300
@@ -283,7 +435,9 @@ export async function executeWorkspaceTool(
         );
 
       matches.push({
-        offset: matchOffset,
+        offset:
+          matchOffset,
+
         excerpt,
       });
 
@@ -303,34 +457,74 @@ export async function executeWorkspaceTool(
 
       summary: {
         query,
+
         matchCount:
           matches.length,
+
+        offsets:
+          matches
+            .slice(0, 10)
+            .map((match) =>
+              match.offset
+            ),
+
+        matches:
+          matches
+            .slice(0, 5)
+            .map((match) => ({
+              offset:
+                match.offset,
+
+              preview:
+                match.excerpt
+                  .replace(/\s+/g, ' ')
+                  .trim()
+                  .slice(0, 180),
+            })),
       },
 
       terminal: false,
     };
   }
 
-  // --------------------------------
+  // =================================
   // save_result
-  // --------------------------------
-  if (toolCall.name === 'save_result') {
+  // =================================
+
+  if (
+    toolCall.name ===
+    'save_result'
+  ) {
+
     const expectedFields = [
+      'Reporting Period',
+      'Aircraft Serial Number',
+      'Aircraft Type',
       'Total Month Cycles',
       'Total Month Hours',
       'Total New Cycles',
       'Total New Time',
-      'Aircraft Type',
     ];
+
+    // --------------------------------
+    // Validate normal fields
+    // --------------------------------
 
     for (
       const fieldName
       of expectedFields
     ) {
+
       const field =
-        args[fieldName] as {
-          value: string | null;
-          confidence: number;
+        args[
+          fieldName
+        ] as {
+          value:
+            string |
+            null;
+
+          confidence:
+            number;
         };
 
       if (!field) {
@@ -358,6 +552,120 @@ export async function executeWorkspaceTool(
       }
     }
 
+    // --------------------------------
+    // Validate component list
+    // --------------------------------
+
+    const components =
+      args[
+        'Component List'
+      ] as Array<{
+        type: string;
+
+        serialNumber:
+          string |
+          null;
+
+        confidence:
+          number;
+      }>;
+
+    if (
+      !Array.isArray(
+        components
+      )
+    ) {
+      throw new Error(
+        'Component List must be an array.'
+      );
+    }
+
+    const documentPathForValidation =
+      resolveWorkspacePath(
+        workspaceId,
+        'uploads',
+        'document.md'
+      );
+
+    const documentTextForValidation =
+      await fs.readFile(
+        documentPathForValidation,
+        'utf-8'
+      );
+
+    for (
+      const component
+      of components
+    ) {
+
+      if (
+        !component.type
+      ) {
+        throw new Error(
+          'Component type is required.'
+        );
+      }
+
+      if (
+        component.serialNumber ===
+          null &&
+        component.confidence !==
+          0
+      ) {
+        throw new Error(
+          `${component.type}: null serial number must use confidence 0.`
+        );
+      }
+
+      if (
+        typeof component.serialNumber ===
+          'string'
+      ) {
+        const serialNumber =
+          component.serialNumber.trim();
+
+        if (!serialNumber) {
+          throw new Error(
+            `${component.type}: empty serial number must use null and confidence 0.`
+          );
+        }
+
+        if (
+          isSuspiciousPartialSerial(
+            serialNumber
+          )
+        ) {
+          throw new Error(
+            `${component.type}: serial number "${serialNumber}" appears incomplete. Verify the full value with read_document or use null with confidence 0.`
+          );
+        }
+
+        if (
+          !serialAppearsAsCompleteToken(
+            documentTextForValidation,
+            serialNumber
+          )
+        ) {
+          throw new Error(
+            `${component.type}: serial number "${serialNumber}" was not found as a complete token in the document. Verify the full value with read_document or use null with confidence 0.`
+          );
+        }
+      }
+
+      if (
+        component.confidence < 0 ||
+        component.confidence > 100
+      ) {
+        throw new Error(
+          `${component.type}: confidence must be between 0 and 100.`
+        );
+      }
+    }
+
+    // --------------------------------
+    // Save AI extraction
+    // --------------------------------
+
     const resultPath =
       resolveWorkspacePath(
         workspaceId,
@@ -367,11 +675,13 @@ export async function executeWorkspaceTool(
 
     await fs.writeFile(
       resultPath,
+
       JSON.stringify(
         args,
         null,
         2
       ),
+
       'utf-8'
     );
 
@@ -382,8 +692,12 @@ export async function executeWorkspaceTool(
 
       summary: {
         saved: true,
+
         fields:
           expectedFields,
+
+        componentCount:
+          components.length,
       },
 
       terminal: true,

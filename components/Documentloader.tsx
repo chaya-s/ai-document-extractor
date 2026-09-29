@@ -3,11 +3,13 @@
 import { useState } from 'react';
 
 const FIELD_NAMES = [
+  'Reporting Period',
+  'Aircraft Serial Number',
+  'Aircraft Type',
   'Total Month Cycles',
   'Total Month Hours',
   'Total New Cycles',
   'Total New Time',
-  'Aircraft Type',
 ] as const;
 
 type FieldName = (typeof FIELD_NAMES)[number];
@@ -17,26 +19,316 @@ type ExtractedField = {
   confidence: number;
 };
 
+type ComponentField = {
+  type: string;
+  serialNumber: string | null;
+  confidence: number;
+};
+
 type AircraftData = Record<
   FieldName,
   ExtractedField
->;
+> & {
+  'Component List'?: ComponentField[];
+};
 
 type TraceEvent = {
   timestamp: string;
 
   type:
     | 'upload.ready'
+    | 'session'
+    | 'model_change'
+    | 'thinking_level_change'
+    | 'message'
     | 'session.started'
     | 'model.started'
+    | 'agent.trace'
     | 'tool.started'
     | 'tool.completed'
     | 'result.saved'
     | 'session.completed'
     | 'session.failed';
 
+  id?: string;
+  parentId?: string | null;
   data: Record<string, unknown>;
+  [key: string]: unknown;
 };
+
+type TraceContentBlock = {
+  type?: unknown;
+  name?: unknown;
+  arguments?: unknown;
+};
+
+function formatTextValue(
+  value: unknown
+): string {
+  if (value === null || value === undefined) {
+    return 'none';
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    return String(value);
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return 'none';
+    }
+
+    return value
+      .map((item) => formatTextValue(item))
+      .join(', ');
+  }
+
+  if (typeof value === 'object') {
+    return Object.entries(
+      value as Record<string, unknown>
+    )
+      .map(
+        ([key, item]) =>
+          `${key}: ${formatTextValue(item)}`
+      )
+      .join('; ');
+  }
+
+  return String(value);
+}
+
+function traceJson(
+  value: unknown
+) {
+  return formatTextValue(value);
+}
+
+function eventData(
+  event: TraceEvent
+): Record<string, unknown> {
+  const data =
+    typeof event.data === 'object' &&
+    event.data !== null
+      ? event.data
+      : {};
+
+  const topLevel: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(event)) {
+    if (
+      key !== 'type' &&
+      key !== 'id' &&
+      key !== 'parentId' &&
+      key !== 'timestamp' &&
+      key !== 'data' &&
+      key !== 'message'
+    ) {
+      topLevel[key] = value;
+    }
+  }
+
+  return {
+    ...data,
+    ...topLevel,
+  };
+}
+
+function eventMessage(
+  event: TraceEvent
+): Record<string, unknown> {
+  const message = event.message;
+
+  return typeof message === 'object' &&
+    message !== null
+    ? (message as Record<string, unknown>)
+    : {};
+}
+
+function messageContentBlocks(
+  message: Record<string, unknown>
+): TraceContentBlock[] {
+  if (!Array.isArray(message.content)) {
+    return [];
+  }
+
+  return message.content.filter(
+    (block): block is TraceContentBlock =>
+      typeof block === 'object' &&
+      block !== null
+  );
+}
+
+function stripAgentTrace(text: string) {
+  let output = text;
+  const startTag = '[AGENT_TRACE]';
+  const endTag = '[/AGENT_TRACE]';
+
+  while (output.includes(startTag)) {
+    const start = output.indexOf(startTag);
+    const end = output.indexOf(endTag, start);
+
+    if (end === -1) {
+      output = output.slice(0, start);
+      break;
+    }
+
+    output =
+      output.slice(0, start) +
+      output.slice(end + endTag.length);
+  }
+
+  return output.trim();
+}
+
+function textBlocksFromMessage(
+  message: Record<string, unknown>
+) {
+  return messageContentBlocks(message)
+    .filter((block) => block.type === 'text')
+    .map((block) => {
+      const text =
+        'text' in block
+          ? (block as { text?: unknown }).text
+          : '';
+
+      return typeof text === 'string'
+        ? stripAgentTrace(text)
+        : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function toolCallsFromTraceMessage(
+  message: Record<string, unknown>
+) {
+  return messageContentBlocks(message).filter(
+    (block) => block.type === 'toolCall'
+  );
+}
+
+function toolArguments(
+  block: TraceContentBlock
+): Record<string, unknown> {
+  return typeof block.arguments === 'object' &&
+    block.arguments !== null
+    ? (block.arguments as Record<string, unknown>)
+    : {};
+}
+
+function shortPreview(value: unknown) {
+  return String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180);
+}
+
+function formatSearchResult(
+  details: Record<string, unknown>
+) {
+  const query = String(details.query ?? 'document');
+  const count = Number(details.matchCount ?? 0);
+
+  if (!Number.isFinite(count) || count === 0) {
+    return `SEARCH RESULT\nNo match found for "${query}".`;
+  }
+
+  const lines = [
+    'SEARCH RESULT',
+    `Found ${count} ${count === 1 ? 'match' : 'matches'} for "${query}".`,
+  ];
+
+  if (Array.isArray(details.matches)) {
+    for (const match of details.matches.slice(0, 5)) {
+      if (
+        typeof match === 'object' &&
+        match !== null &&
+        'preview' in match
+      ) {
+        const preview = shortPreview(
+          (match as { preview?: unknown }).preview
+        );
+
+        if (preview) {
+          lines.push(`- ${preview}`);
+        }
+      }
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function fieldValue(
+  result: Record<string, unknown>,
+  field: FieldName
+) {
+  const value = result[field];
+
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'value' in value
+  ) {
+    return String(
+      (value as { value?: unknown }).value ?? 'Not found'
+    );
+  }
+
+  return 'Not found';
+}
+
+function formatSavedResult(result: unknown) {
+  if (
+    typeof result !== 'object' ||
+    result === null
+  ) {
+    return 'EXTRACTION COMPLETE';
+  }
+
+  const data = result as Record<string, unknown>;
+  const lines = [
+    'EXTRACTION COMPLETE',
+    '',
+    `Reporting Period: ${fieldValue(data, 'Reporting Period')}`,
+    `Aircraft Serial Number: ${fieldValue(data, 'Aircraft Serial Number')}`,
+    `Aircraft Type: ${fieldValue(data, 'Aircraft Type')}`,
+    `Total Month Cycles: ${fieldValue(data, 'Total Month Cycles')}`,
+    `Total Month Hours: ${fieldValue(data, 'Total Month Hours')}`,
+    `Total New Cycles: ${fieldValue(data, 'Total New Cycles')}`,
+    `Total New Time: ${fieldValue(data, 'Total New Time')}`,
+    '',
+    'Component List:',
+  ];
+
+  const components = data['Component List'];
+
+  if (Array.isArray(components) && components.length > 0) {
+    for (const component of components) {
+      if (
+        typeof component === 'object' &&
+        component !== null
+      ) {
+        const item = component as ComponentField;
+
+        lines.push(
+          `- ${item.type} — Serial Number: ${item.serialNumber ?? 'Not found'} — Confidence: ${item.confidence ?? 0}%`
+        );
+      }
+    }
+  } else {
+    lines.push('- None found');
+  }
+
+  return lines.join('\n');
+}
 
 function formatTime(timestamp: string) {
   return new Date(timestamp).toLocaleTimeString(
@@ -51,96 +343,144 @@ function formatTime(timestamp: string) {
 
 function formatTraceEvent(event: TraceEvent) {
   const time = formatTime(event.timestamp);
+  const data = eventData(event);
 
   if (event.type === 'upload.ready') {
-    return `[${time}] UPLOAD READY: workspace ${String(
-      event.data.workspaceId ?? ''
-    )}`;
+    const filename = String(data.filename ?? 'document');
+
+    return `[${time}] UPLOAD READY\nUploaded ${filename}`;
+  }
+
+  if (event.type === 'session') {
+    return null;
   }
 
   if (event.type === 'session.started') {
-    return `[${time}] SESSION.STARTED: ${JSON.stringify(
-      {
-        workspaceId: event.data.workspaceId,
-        sessionId: event.data.sessionId,
-      }
+    return `[${time}] SESSION STARTED\nDocument: ${String(
+      data.originalFilename ?? 'uploaded document'
+    )}`;
+  }
+
+  if (event.type === 'model_change') {
+    return `[${time}] MODEL\nModel: ${String(
+      data.provider ?? ''
+    )}/${String(data.modelId ?? '')}`;
+  }
+
+  if (event.type === 'thinking_level_change') {
+    return `[${time}] THINKING LEVEL\nThinking level: ${String(
+      data.thinkingLevel ?? ''
     )}`;
   }
 
   if (event.type === 'model.started') {
-    return `[${time}] MODEL.STARTED: ${JSON.stringify(
-      {
-        model: event.data.model,
+    return null;
+  }
+
+  if (event.type === 'message') {
+    const message = eventMessage(event);
+    const role = String(message.role ?? '');
+
+    if (role === 'assistant') {
+      const visibleText = textBlocksFromMessage(message);
+
+      if (visibleText) {
+        return `[${time}]\n${visibleText}`;
       }
-    )}`;
+
+      const toolCalls = toolCallsFromTraceMessage(message);
+      const toolTexts = toolCalls.map((block) => {
+        const tool = String(block.name ?? '');
+        const args = toolArguments(block);
+
+        if (tool === 'grep_document') {
+          return `SEARCHING: ${String(args.query ?? 'document')}`;
+        }
+
+        if (tool === 'read_document') {
+          return 'READING DOCUMENT\nInspecting nearby aircraft information.';
+        }
+
+        if (tool === 'save_result') {
+          return 'SAVING RESULT\nSaving extracted aircraft details.';
+        }
+
+        return `USING TOOL\n${tool}`;
+      });
+
+      if (toolTexts.length === 0) {
+        return null;
+      }
+
+      return [`[${time}]`, ...toolTexts]
+        .filter(Boolean)
+        .join('\n');
+    }
+
+    if (role === 'toolResult') {
+      const tool = String(message.toolName ?? '');
+
+      if (message.isError) {
+        return `[${time}] TOOL ERROR\n${String(
+          message.error ?? 'Tool execution failed.'
+        )}`;
+      }
+
+      const details =
+        typeof message.details === 'object' &&
+        message.details !== null
+          ? (message.details as Record<string, unknown>)
+          : {};
+
+      if (tool === 'grep_document') {
+        return `[${time}] ${formatSearchResult(details)}`;
+      }
+
+      if (tool === 'read_document') {
+        return `[${time}] DOCUMENT READ\nRead ${String(
+          details.returnedCharacters ?? '0'
+        )} characters from document offset ${String(
+          details.offset ?? '0'
+        )}.`;
+      }
+
+      if (tool === 'save_result') {
+        return `[${time}] RESULT SAVED\nAircraft extraction saved successfully.`;
+      }
+
+      return `[${time}] TOOL RESULT\n${tool} completed.`;
+    }
+
+    return `[${time}] MESSAGE\n${role || 'Received model message.'}`;
+  }
+
+  if (event.type === 'agent.trace') {
+    return null;
   }
 
   if (event.type === 'tool.started') {
-    const tool = String(event.data.tool ?? '');
-
-    const args: Record<string, unknown> = {};
-
-    if (event.data.query !== undefined) {
-      args.query = event.data.query;
-    }
-
-    if (event.data.maxMatches !== undefined) {
-      args.maxMatches = event.data.maxMatches;
-    }
-
-    if (event.data.offset !== undefined) {
-      args.offset = event.data.offset;
-    }
-
-    if (event.data.limit !== undefined) {
-      args.limit = event.data.limit;
-    }
-
-    if (event.data.fields !== undefined) {
-      args.fields = event.data.fields;
-    }
-
-    const argsText =
-      Object.keys(args).length > 0
-        ? ` ${JSON.stringify(args)}`
-        : '';
-
-    return `[${time}] TOOL STARTED: ${tool}${argsText}`;
+    return null;
   }
 
   if (event.type === 'tool.completed') {
-    const tool = String(event.data.tool ?? '');
-
-    if (event.data.error) {
-      return `[${time}] TOOL COMPLETED: ${tool} failed ${JSON.stringify(
-        {
-          error: event.data.error,
-        }
-      )}`;
-    }
-
-    return `[${time}] TOOL COMPLETED: ${tool} completed`;
+    return null;
   }
 
   if (event.type === 'result.saved') {
-    return `[${time}] RESULT.SAVED: ${JSON.stringify(
-      event.data.result ?? {}
-    )}`;
+    return `[${time}] ${formatSavedResult(data.result)}`;
   }
 
   if (event.type === 'session.completed') {
-    return `[${time}] SESSION.COMPLETED: ${JSON.stringify(
-      event.data
-    )}`;
+    return `[${time}] SESSION COMPLETE\nExtraction finished.`;
   }
 
   if (event.type === 'session.failed') {
-    return `[${time}] SESSION.FAILED: ${JSON.stringify(
-      event.data
+    return `[${time}] SESSION FAILED\n${String(
+      data.error ?? 'Extraction failed.'
     )}`;
   }
 
-  return `[${time}] UNKNOWN EVENT`;
+  return `[${time}] ${event.type}\n${formatTextValue(data)}`;
 }
 
 export default function Documentloader() {
@@ -210,15 +550,16 @@ export default function Documentloader() {
 
       setTraceEvents([
         {
+          type: 'upload.ready',
+          id: crypto.randomUUID().slice(0, 8),
+          parentId: null,
           timestamp:
             new Date().toISOString(),
-
-          type: 'upload.ready',
-
-          data: {
-            workspaceId:
-              data.workspaceId,
-          },
+          data: {},
+          workspaceId:
+            data.workspaceId,
+          filename:
+            data.filename,
         },
       ]);
     } catch (err) {
@@ -325,8 +666,8 @@ export default function Documentloader() {
             'result.saved'
           ) {
             setAircraftData(
-              event.data
-                .result as AircraftData
+              (event.result ??
+                event.data?.result) as AircraftData
             );
           }
 
@@ -336,7 +677,8 @@ export default function Documentloader() {
           ) {
             setError(
               String(
-                event.data.error ||
+                event.error ??
+                  event.data?.error ??
                   'Extraction failed.'
               )
             );
@@ -487,23 +829,32 @@ export default function Documentloader() {
                   (
                     event,
                     index
-                  ) => (
-                    <div
-                      key={`${event.timestamp}-${index}`}
-                      className="
-                        mb-2
-                        whitespace-pre-wrap
-                        break-words
-                        font-mono
-                        text-sm
-                        text-gray-200
-                      "
-                    >
-                      {formatTraceEvent(
+                  ) => {
+                    const formatted =
+                      formatTraceEvent(
                         event
-                      )}
-                    </div>
-                  )
+                      );
+
+                    if (!formatted) {
+                      return null;
+                    }
+
+                    return (
+                      <div
+                        key={`${event.timestamp}-${index}`}
+                        className="
+                          mb-2
+                          whitespace-pre-wrap
+                          break-words
+                          font-mono
+                          text-sm
+                          text-gray-200
+                        "
+                      >
+                        {formatted}
+                      </div>
+                    );
+                  }
                 )}
 
               </div>
@@ -514,7 +865,7 @@ export default function Documentloader() {
             <div className="mt-6">
 
               <h3 className="mb-4 text-lg font-semibold text-gray-700">
-                Extracted Aircraft Details
+                AI / Pi Extraction
               </h3>
 
               <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">

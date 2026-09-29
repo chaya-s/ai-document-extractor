@@ -8,8 +8,14 @@ import path from 'path';
 
 import {
   createWorkspace,
+  resolveWorkspacePath,
   writeSession,
 } from '@/lib/pi-workspace';
+
+import {
+  buildLiteParseJson,
+  type LiteParseJson,
+} from '@/lib/liteparse-extraction';
 
 export const runtime = 'nodejs';
 
@@ -100,6 +106,7 @@ export async function POST(request: Request) {
     // Extract document as Markdown
     // --------------------------------
     let markdownContent = '';
+    let liteparseJson: LiteParseJson | null = null;
 
     if (extension === '.pdf') {
       const parser = new LiteParse({
@@ -108,6 +115,14 @@ export async function POST(request: Request) {
         imageMode: 'off',
 
         extractLinks: true,
+
+        emitWordBoxes: true,
+
+        extractBlocks: true,
+
+        extractDocumentMetadata: true,
+
+        extractContentBounds: true,
 
         // Your current aircraft PDFs have text.
         // Keep OCR off unless you later need scanned PDFs.
@@ -119,6 +134,29 @@ export async function POST(request: Request) {
 
       markdownContent =
         result.text;
+
+      liteparseJson =
+        buildLiteParseJson(
+          file.name,
+          result
+        );
+
+      const liteparsePath =
+        resolveWorkspacePath(
+          workspace.workspaceId,
+          'results',
+          'liteparse.json'
+        );
+
+      await fs.writeFile(
+        liteparsePath,
+        JSON.stringify(
+          liteparseJson,
+          null,
+          2
+        ),
+        'utf-8'
+      );
     } else if (
       extension === '.docx'
     ) {
@@ -186,13 +224,56 @@ export async function POST(request: Request) {
         systemPrompt: `
 You are an aircraft document extraction agent.
 
-You must extract exactly these five fields:
+Your job is to extract aircraft utilization, aircraft identification, and aircraft component information.
 
-1. Total Month Cycles
-2. Total Month Hours
-3. Total New Cycles
-4. Total New Time
-5. Aircraft Type
+Extract:
+
+1. Reporting Period
+2. Aircraft Serial Number
+3. Aircraft Type
+4. Total Month Cycles
+5. Total Month Hours
+6. Total New Cycles
+7. Total New Time
+8. Component List
+
+For Component List, search for supported aircraft components such as:
+
+- Airframe
+- Engine1
+- Engine2
+- APU
+- LandingGearLeft
+- LandingGearRight
+- LandingGearNose
+
+Do not invent components or serial numbers.
+
+Component serial numbers must be complete tokens copied exactly from document evidence.
+
+Rules for component serial numbers:
+
+- Never shorten a serial number.
+- Never infer a serial number from a prefix.
+- Never accept a value if it appears cut off at the start or end of a grep excerpt or read_document chunk.
+- If a component serial looks incomplete, ambiguous, or truncated, call read_document using the real nearby character offset and enough characters to capture the complete value.
+- Verify the complete serial from document text before save_result.
+- If it cannot be verified, use null and confidence 0 instead of a partial value.
+
+Suspicious partial values include:
+
+- P-
+- P-1
+- MDG
+- 829
+
+Each component must contain:
+
+{
+  "type": "component name",
+  "serialNumber": "serial number or null",
+  "confidence": 0-100
+}
 
 You have exactly these tools:
 
@@ -200,21 +281,27 @@ You have exactly these tools:
 - read_document
 - save_result
 
-IMPORTANT TOOL RULES:
+SEARCH RULES:
 
-You have a strict tool-call budget.
+Use grep_document to locate relevant sections.
 
-Start by making only these five grep_document searches:
+Useful queries may include:
 
-1. CYCLES/LANDINGS DURING MONTH
-2. HOURS FLOWN DURING MONTH
-3. TOTAL CYCLES SINCE NEW
-4. AIRCRAFT TOTAL TIME SINCE NEW
-5. A/C TYPE
+- CYCLES/LANDINGS DURING MONTH
+- HOURS FLOWN DURING MONTH
+- TOTAL CYCLES SINCE NEW
+- AIRCRAFT TOTAL TIME SINCE NEW
+- A/C TYPE
+- SERIAL
+- S/N
+- MSN
+- ENGINE
+- APU
+- MAIN LANDING GEAR
+- NOSE LANDING GEAR
+- LANDING GEAR
 
-Do not make multiple alternative searches for the same field unless the required search returns no useful match.
-
-Do not repeat the same query.
+Do not assume the document always uses exactly the same wording.
 
 grep_document returns matches containing:
 - a character offset
@@ -224,29 +311,17 @@ The offset returned by grep_document is a CHARACTER OFFSET.
 
 It is not a line number.
 
-If the grep excerpt already contains the required value, use that value directly.
+If a grep excerpt already provides enough evidence, use it directly.
 
-Do not call read_document when the grep excerpt already provides enough evidence.
+Use read_document only when additional context is required.
 
-Only use read_document when the value is genuinely unclear from the grep result.
-
-If read_document is required:
+When using read_document:
 - use the CHARACTER OFFSET returned by grep_document
-- do not invent an offset
-- do not use a line number as the offset
-- request only enough characters to inspect nearby context
+- do not invent offsets
+- do not use line numbers
+- request only enough surrounding text to understand the section
 
-After the five grep searches, inspect the returned excerpts.
-
-If the five required values are visible, call save_result immediately.
-
-Do not perform extra searches just to confirm a value that is already clearly visible.
-
-Do not keep reading after all required values are known.
-
-Call save_result exactly once.
-
-For fields that cannot be found after reasonable searching, use:
+For missing values use:
 
 {
   "value": null,
@@ -259,6 +334,67 @@ Do not request or use filesystem paths.
 
 Do not output the final extraction as ordinary assistant text.
 
+VISIBLE PROGRESS RULES:
+
+At the beginning, write one short visible plan describing the extraction approach.
+
+Before a tool call, write a short visible action sentence only when it adds useful information. Do not repeat generic progress text after every model call.
+
+After receiving useful evidence, write a short plain-text summary of what was found before continuing.
+
+Examples:
+
+"Searching the aircraft report for the reporting period and aircraft identification."
+"No direct Reporting Period label was found, so I will inspect the report header."
+"Found Reporting Period: Aug 2025, Aircraft Serial Number: 1408, and Aircraft Type: A330-300."
+"Searching for engine, APU, and landing gear serial numbers."
+"Found Engine1: 829090 and Engine2: 890234."
+"Reading the component section to confirm the complete APU serial number."
+"Found all required aircraft and component fields. Saving the extraction."
+
+Before save_result, write one concise summary such as:
+
+"Found all required aircraft and component fields. Saving the extraction."
+
+If the current agent loop supports a final visible assistant response after save_result, produce a concise final extraction summary.
+
+Do not expose private chain-of-thought or hidden reasoning.
+Do not output encrypted reasoning, thinking signatures, or token/cost metadata.
+
+TRACE AND DEBUGGING RULES:
+
+Keep [AGENT_TRACE] only for internal debugging if needed. Browser-visible progress must stand on its own as plain text and must not depend on the JSON trace block.
+
+Use this format for internal trace blocks only:
+
+[AGENT_TRACE]
+{
+  "objective": "current extraction objective",
+  "evidence": ["facts already established"],
+  "missing": ["information still missing"],
+  "action": {
+    "tool": "grep_document | read_document | save_result",
+    "query": "query when relevant"
+  },
+  "reason": "brief reason for this action",
+  "uncertainty": "none or short description of ambiguity",
+  "next": "expected next step"
+}
+[/AGENT_TRACE]
+
+The trace must be a concise operational/debugging summary only.
+Do not quote large sections of the document.
+Do not include private reasoning.
+Do not include hidden chain-of-thought.
+
+Before calling save_result, emit a short plain-text save message and, if useful, a final AGENT_TRACE summarizing:
+- fields found
+- components found
+- fields still missing
+- why extraction is ready to save
+
+Call save_result exactly once when extraction is complete.
+
 The extraction is complete only when save_result succeeds.
 `,
 
@@ -267,31 +403,50 @@ The extraction is complete only when save_result succeeds.
             role: 'user',
 
             content: `
-Extract exactly these five fields from the uploaded aircraft document:
+Extract the following aircraft information from the uploaded aircraft document:
 
+- Reporting Period
+- Aircraft Serial Number
+- Aircraft Type
 - Total Month Cycles
 - Total Month Hours
 - Total New Cycles
 - Total New Time
-- Aircraft Type
+- Component List
 
-Begin with exactly these five grep_document queries:
+For Component List, identify supported components such as:
 
-1. CYCLES/LANDINGS DURING MONTH
-2. HOURS FLOWN DURING MONTH
-3. TOTAL CYCLES SINCE NEW
-4. AIRCRAFT TOTAL TIME SINCE NEW
-5. A/C TYPE
+- Airframe
+- Engine1
+- Engine2
+- APU
+- LandingGearLeft
+- LandingGearRight
+- LandingGearNose
 
-Do not search alternative phrases unless one of those queries produces no useful match.
+Deliberately inspect evidence for:
 
-If the grep excerpts already contain the required values, do not call read_document.
+- APU
+- Engine
+- Main Landing Gear
+- Nose Landing Gear
+- S/N
+- Serial
+- MSN
 
-If additional context is genuinely necessary, use read_document with the character offset returned by grep_document.
+Use grep_document to find relevant sections.
 
-Once you have the five values, call save_result immediately.
+Use read_document only when additional context is necessary. When grep evidence is insufficient, read around the returned CHARACTER OFFSET. Do not invent offsets. Do not use line numbers as offsets.
 
-Do not continue searching after that.
+At the beginning, write one short visible plan. Before tool calls, emit a short visible plain-text action sentence only when it adds useful information. You may also emit an [AGENT_TRACE] block for internal debugging.
+
+After tool results, briefly summarize useful evidence in plain text before continuing. Do not repeat generic progress text after every model call.
+
+Do not invent missing values or component serial numbers. Component serial numbers must be complete exact tokens copied from document evidence. Never save partial serials such as P-, P-1, MDG, or 829. If a serial may be truncated, use read_document around the real nearby offset to verify the full value. If the full serial cannot be verified, use null and confidence 0.
+
+Before save_result, write a concise summary such as: "Found all required aircraft and component fields. Saving the extraction."
+
+Call save_result exactly once when extraction is complete.
 `,
 
             timestamp:
