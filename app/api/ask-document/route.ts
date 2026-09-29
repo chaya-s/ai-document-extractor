@@ -138,19 +138,35 @@ function sanitizeAssistantToolArguments(
   }
 
   if (
+    block.name === 'find_text_coordinates'
+  ) {
+    const safeArgs: Record<
+      string,
+      unknown
+    > = {};
+
+    if (
+      typeof args.text === 'string'
+    ) {
+      safeArgs.text = args.text;
+    }
+
+    if (
+      args.maxMatches !== undefined
+    ) {
+      safeArgs.maxMatches =
+        args.maxMatches;
+    }
+
+    return safeArgs;
+  }
+
+  if (
     block.name === 'save_result'
   ) {
     return {
-      fields: [
-        'Reporting Period',
-        'Aircraft Serial Number',
-        'Aircraft Type',
-        'Total Month Cycles',
-        'Total Month Hours',
-        'Total New Cycles',
-        'Total New Time',
-        'Component List',
-      ],
+      output:
+        'fields + aircraft + components',
     };
   }
 
@@ -227,6 +243,7 @@ type AgentTraceData = {
     tool:
       | 'grep_document'
       | 'read_document'
+      | 'find_text_coordinates'
       | 'save_result'
       | null;
 
@@ -292,6 +309,7 @@ function sanitizeTraceTool(
   if (
     value === 'grep_document' ||
     value === 'read_document' ||
+    value === 'find_text_coordinates' ||
     value === 'save_result'
   ) {
     return value;
@@ -448,18 +466,27 @@ function buildSafeToolStartedData(
   }
 
   if (
+    toolCall.name === 'find_text_coordinates'
+  ) {
+    if (
+      typeof args?.text === 'string'
+    ) {
+      data.text = args.text;
+    }
+
+    if (
+      args?.maxMatches !== undefined
+    ) {
+      data.maxMatches =
+        args.maxMatches;
+    }
+  }
+
+  if (
     toolCall.name === 'save_result'
   ) {
-    data.fields = [
-      'Reporting Period',
-      'Aircraft Serial Number',
-      'Aircraft Type',
-      'Total Month Cycles',
-      'Total Month Hours',
-      'Total New Cycles',
-      'Total New Time',
-      'Component List',
-    ];
+    data.output =
+      'fields + aircraft + components';
   }
 
   return data;

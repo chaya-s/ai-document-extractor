@@ -8,14 +8,8 @@ import path from 'path';
 
 import {
   createWorkspace,
-  resolveWorkspacePath,
   writeSession,
 } from '@/lib/pi-workspace';
-
-import {
-  buildLiteParseJson,
-  type LiteParseJson,
-} from '@/lib/liteparse-extraction';
 
 export const runtime = 'nodejs';
 
@@ -98,7 +92,7 @@ export async function POST(request: Request) {
       Buffer.from(arrayBuffer);
 
     await fs.writeFile(
-      workspace.originalPath,
+      workspace.originalFilePath,
       buffer
     );
 
@@ -106,7 +100,6 @@ export async function POST(request: Request) {
     // Extract document as Markdown
     // --------------------------------
     let markdownContent = '';
-    let liteparseJson: LiteParseJson | null = null;
 
     if (extension === '.pdf') {
       const parser = new LiteParse({
@@ -135,23 +128,10 @@ export async function POST(request: Request) {
       markdownContent =
         result.text;
 
-      liteparseJson =
-        buildLiteParseJson(
-          file.name,
-          result
-        );
-
-      const liteparsePath =
-        resolveWorkspacePath(
-          workspace.workspaceId,
-          'results',
-          'liteparse.json'
-        );
-
       await fs.writeFile(
-        liteparsePath,
+        workspace.documentJsonPath,
         JSON.stringify(
-          liteparseJson,
+          result,
           null,
           2
         ),
@@ -170,6 +150,20 @@ export async function POST(request: Request) {
 
       markdownContent =
         `# ${file.name}\n\n${text}\n`;
+
+      await fs.writeFile(
+        workspace.documentJsonPath,
+        JSON.stringify(
+          {
+            totalPages: 0,
+            pages: [],
+            text,
+          },
+          null,
+          2
+        ),
+        'utf-8'
+      );
     }
 
     if (
@@ -229,13 +223,14 @@ Your job is to extract aircraft utilization, aircraft identification, and aircra
 Extract:
 
 1. Reporting Period
-2. Aircraft Serial Number
-3. Aircraft Type
-4. Total Month Cycles
-5. Total Month Hours
-6. Total New Cycles
-7. Total New Time
-8. Component List
+2. Aircraft Serial Number / MSN
+3. Registration when present
+4. Aircraft Type
+5. Total Month Cycles
+6. Total Month Hours
+7. Total New Cycles
+8. Total New Time
+9. Component details for Airframe, Engine1, Engine2, APU, LandingGearLeft, LandingGearRight, and LandingGearNose
 
 For Component List, search for supported aircraft components such as:
 
@@ -267,18 +262,39 @@ Suspicious partial values include:
 - MDG
 - 829
 
-Each component must contain:
+Each component must be saved under its fixed key and contain:
 
-{
-  "type": "component name",
-  "serialNumber": "serial number or null",
-  "confidence": 0-100
-}
+- SerialNumber
+- TSN
+- CSN
+- MonthlyUtil_Hrs
+- MonthlyUtil_Cyc
+- attachment_status
+- derate
+- location
+- extraction_confidence (0-1)
+- raw_source_text
+- available
+- TSN_raw
+- CSN_raw
+- MonthlyUtil_Hrs_raw
+- MonthlyUtil_Cyc_raw
+- source_file
+- current_aircraft
+- SerialNumber_bbox
+- TSN_bbox
+- CSN_bbox
+- MonthlyUtil_Hrs_bbox
+- MonthlyUtil_Cyc_bbox
+- location_bbox
+
+Use find_text_coordinates for coordinates only when the matching text is reliably known. Use null for unreliable coordinates.
 
 You have exactly these tools:
 
 - grep_document
 - read_document
+- find_text_coordinates
 - save_result
 
 SEARCH RULES:
@@ -302,6 +318,13 @@ Useful queries may include:
 - LANDING GEAR
 
 Do not assume the document always uses exactly the same wording.
+
+For summary fields, use these label variants when useful:
+- Total Month Cycles: CYCLES/LANDINGS DURING MONTH, Total Cycles Made During Month
+- Total Month Hours: HOURS FLOWN DURING MONTH, Total Hours Flown During Month
+- Total New Cycles: TOTAL CYCLES SINCE NEW, Total Cycles Since New
+- Total New Time: AIRCRAFT TOTAL TIME SINCE NEW, Total Time Since New
+- Aircraft Type: A/C TYPE, Aircraft Type
 
 grep_document returns matches containing:
 - a character offset
@@ -373,7 +396,7 @@ Use this format for internal trace blocks only:
   "evidence": ["facts already established"],
   "missing": ["information still missing"],
   "action": {
-    "tool": "grep_document | read_document | save_result",
+    "tool": "grep_document | read_document | find_text_coordinates | save_result",
     "query": "query when relevant"
   },
   "reason": "brief reason for this action",
@@ -424,6 +447,8 @@ For Component List, identify supported components such as:
 - LandingGearRight
 - LandingGearNose
 
+When saving, include fields[], aircraft metadata, and components with all fixed component keys. Keep unavailable components with available false, null values, status Not found, and extraction_confidence 0.
+
 Deliberately inspect evidence for:
 
 - APU
@@ -438,11 +463,17 @@ Use grep_document to find relevant sections.
 
 Use read_document only when additional context is necessary. When grep evidence is insufficient, read around the returned CHARACTER OFFSET. Do not invent offsets. Do not use line numbers as offsets.
 
+Use find_text_coordinates for source bounding boxes after you know the exact matched text. Do not invent bbox values; use null for any coordinate that cannot be reliably located.
+
 At the beginning, write one short visible plan. Before tool calls, emit a short visible plain-text action sentence only when it adds useful information. You may also emit an [AGENT_TRACE] block for internal debugging.
 
 After tool results, briefly summarize useful evidence in plain text before continuing. Do not repeat generic progress text after every model call.
 
 Do not invent missing values or component serial numbers. Component serial numbers must be complete exact tokens copied from document evidence. Never save partial serials such as P-, P-1, MDG, or 829. If a serial may be truncated, use read_document around the real nearby offset to verify the full value. If the full serial cannot be verified, use null and confidence 0.
+
+For Airframe, map aircraft-level values directly: Total New Time -> TSN, Total New Cycles -> CSN, Total Month Hours -> MonthlyUtil_Hrs, Total Month Cycles -> MonthlyUtil_Cyc. Airframe SerialNumber is the aircraft MSN when present. Do not copy the aircraft MSN to Engine/APU/Landing Gear rows.
+
+For TSN and monthly hour values with HH:MM text, preserve the original in the corresponding *_raw field and save normalized decimal hours in the normal field.
 
 Before save_result, write a concise summary such as: "Found all required aircraft and component fields. Saving the extraction."
 

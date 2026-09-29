@@ -19,11 +19,90 @@ export type WorkspaceSession = {
   context: Context;
 };
 
+function sanitizeFilename(filename: string) {
+  const parsed = path.parse(filename);
+  const safeName = (parsed.name || 'document')
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '') || 'document';
+
+  const safeExtension = parsed.ext
+    .toLowerCase()
+    .replace(/[^.A-Za-z0-9_-]+/g, '');
+
+  return `${safeName}${safeExtension}`;
+}
+
+export function workspaceFilePaths(
+  workspaceId: string,
+  originalFilename: string
+) {
+  const safeOriginalFilename =
+    sanitizeFilename(originalFilename);
+
+  const parsed = path.parse(
+    safeOriginalFilename
+  );
+
+  const uploadsDir = resolveWorkspacePath(
+    workspaceId,
+    'uploads'
+  );
+  const resultsDir = resolveWorkspacePath(
+    workspaceId,
+    'results'
+  );
+  const tracesDir = resolveWorkspacePath(
+    workspaceId,
+    'traces'
+  );
+
+  const originalFilePath = resolveWorkspacePath(
+    workspaceId,
+    'uploads',
+    safeOriginalFilename
+  );
+  const documentPath = resolveWorkspacePath(
+    workspaceId,
+    'uploads',
+    `${parsed.name}.md`
+  );
+  const documentJsonPath = resolveWorkspacePath(
+    workspaceId,
+    'uploads',
+    `${parsed.name}.json`
+  );
+  const resultPath = resolveWorkspacePath(
+    workspaceId,
+    'results',
+    'result.json'
+  );
+  const metadataPath = resolveWorkspacePath(
+    workspaceId,
+    'session.json'
+  );
+
+  return {
+    safeOriginalFilename,
+    uploadsDir,
+    resultsDir,
+    tracesDir,
+    originalFilePath,
+    originalPath: originalFilePath,
+    documentPath,
+    documentJsonPath,
+    resultPath,
+    metadataPath,
+  };
+}
+
 const WORKSPACE_ID_PATTERN =
   /^workspace-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function workspaceRoot() {
-  return path.resolve(process.cwd(), 'workspace');
+  return path.resolve(
+    process.env.WORKSPACE_DIR ??
+      path.join(process.cwd(), 'workspace')
+  );
 }
 
 export function assertWorkspaceId(
@@ -82,43 +161,24 @@ export async function createWorkspace(
     workspaceId
   );
 
-  const uploadsDir = resolveWorkspacePath(
+  const paths = workspaceFilePaths(
     workspaceId,
-    'uploads'
-  );
-  const resultsDir = resolveWorkspacePath(
-    workspaceId,
-    'results'
-  );
-  const tracesDir = resolveWorkspacePath(
-    workspaceId,
-    'traces'
+    originalFilename
+      .toLowerCase()
+      .endsWith(extension)
+      ? originalFilename
+      : `${originalFilename}${extension}`
   );
 
-  await fs.mkdir(uploadsDir, { recursive: true });
-  await fs.mkdir(resultsDir, { recursive: true });
-  await fs.mkdir(tracesDir, { recursive: true });
-
-  const originalPath = resolveWorkspacePath(
-    workspaceId,
-    'uploads',
-    `original${extension}`
-  );
-  const documentPath = resolveWorkspacePath(
-    workspaceId,
-    'uploads',
-    'document.md'
-  );
+  await fs.mkdir(paths.uploadsDir, { recursive: true });
+  await fs.mkdir(paths.resultsDir, { recursive: true });
+  await fs.mkdir(paths.tracesDir, { recursive: true });
 
   return {
     workspaceId,
     sessionId,
     workspaceDir,
-    uploadsDir,
-    resultsDir,
-    tracesDir,
-    originalPath,
-    documentPath,
+    ...paths,
   };
 }
 

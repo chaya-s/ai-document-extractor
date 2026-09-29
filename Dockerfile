@@ -31,10 +31,12 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
+ENV WORKSPACE_DIR=/home/nextjs/workspace
+ENV WEBSITES_ENABLE_APP_SERVICE_STORAGE=true
 
 RUN groupadd --system --gid 1001 nodejs \
   && useradd --system --uid 1001 --gid nodejs nextjs \
-  && mkdir -p /app/workspace /home/nextjs \
+  && mkdir -p /home/nextjs/workspace \
   && chown -R nextjs:nodejs /app /home/nextjs
 
 # Next.js standalone server output.
@@ -53,6 +55,7 @@ USER nextjs
 EXPOSE 3000
 
 # Uploaded documents, document.md, liteparse.json, result.json, and traces.
-VOLUME ["/app/workspace"]
+# On Azure App Service, keep WEBSITES_ENABLE_APP_SERVICE_STORAGE=true so /home persists across restarts.
+VOLUME ["/home/nextjs/workspace"]
 
 CMD ["node", "server.js"]

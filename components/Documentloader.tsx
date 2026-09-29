@@ -15,22 +15,89 @@ const FIELD_NAMES = [
 type FieldName = (typeof FIELD_NAMES)[number];
 
 type ExtractedField = {
-  value: string | null;
+  value: string | number | null;
   confidence: number;
 };
+
+type BoundingBox = {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  matched_text: string;
+};
+
+type ComponentKey =
+  | 'Airframe'
+  | 'Engine1'
+  | 'Engine2'
+  | 'APU'
+  | 'LandingGearLeft'
+  | 'LandingGearRight'
+  | 'LandingGearNose';
 
 type ComponentField = {
-  type: string;
-  serialNumber: string | null;
-  confidence: number;
+  SerialNumber: string | null;
+  TSN: string | number | null;
+  CSN: string | number | null;
+  MonthlyUtil_Hrs: string | number | null;
+  MonthlyUtil_Cyc: string | number | null;
+  attachment_status: string | null;
+  derate: string | null;
+  location: string | null;
+  extraction_confidence: number;
+  raw_source_text: string | null;
+  available: boolean;
+  TSN_raw: string | null;
+  CSN_raw: string | null;
+  MonthlyUtil_Hrs_raw: string | null;
+  MonthlyUtil_Cyc_raw: string | null;
+  source_file: string | null;
+  current_aircraft: string | null;
+  SerialNumber_bbox: BoundingBox | null;
+  TSN_bbox: BoundingBox | null;
+  CSN_bbox: BoundingBox | null;
+  MonthlyUtil_Hrs_bbox: BoundingBox | null;
+  MonthlyUtil_Cyc_bbox: BoundingBox | null;
+  location_bbox: BoundingBox | null;
 };
 
-type AircraftData = Record<
-  FieldName,
-  ExtractedField
-> & {
-  'Component List'?: ComponentField[];
+type AircraftData = {
+  aircraft?: {
+    aircraft_type?: string | number | null;
+    msn?: string | number | null;
+    registration?: string | number | null;
+    reporting_period?: string | number | null;
+    source_file?: string | null;
+  };
+  fields?: Array<{
+    name: string;
+    value: string | number | null;
+    confidence: number;
+  }>;
+  components?: Partial<Record<ComponentKey, ComponentField>>;
+  savedAt?: string;
+} & Partial<Record<FieldName, ExtractedField>> & {
+  'Component List'?: Array<{
+    type: string;
+    serialNumber: string | null;
+    confidence: number;
+  }>;
 };
+
+const COMPONENT_ROWS: Array<{
+  key: ComponentKey;
+  label: string;
+}> = [
+  { key: 'Airframe', label: 'Airframe' },
+  { key: 'Engine1', label: 'Engine 1' },
+  { key: 'Engine2', label: 'Engine 2' },
+  { key: 'APU', label: 'APU' },
+  { key: 'LandingGearLeft', label: 'Landing Gear Left' },
+  { key: 'LandingGearRight', label: 'Landing Gear Right' },
+  { key: 'LandingGearNose', label: 'Landing Gear Nose' },
+];
 
 type TraceEvent = {
   timestamp: string;
@@ -266,10 +333,34 @@ function formatSearchResult(
   return lines.join('\n');
 }
 
+function displayValue(value: unknown) {
+  if (value === null || value === undefined || value === '') {
+    return '-';
+  }
+
+  return String(value);
+}
+
 function fieldValue(
   result: Record<string, unknown>,
   field: FieldName
 ) {
+  const fields = result.fields;
+
+  if (Array.isArray(fields)) {
+    const item = fields.find(
+      (entry) =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        'name' in entry &&
+        (entry as { name?: unknown }).name === field
+    ) as { value?: unknown } | undefined;
+
+    if (item) {
+      return displayValue(item.value);
+    }
+  }
+
   const value = result[field];
 
   if (
@@ -277,12 +368,89 @@ function fieldValue(
     value !== null &&
     'value' in value
   ) {
-    return String(
-      (value as { value?: unknown }).value ?? 'Not found'
+    return displayValue(
+      (value as { value?: unknown }).value
     );
   }
 
-  return 'Not found';
+  return '-';
+}
+
+function componentConfidence(value: unknown) {
+  const numeric = Number(value ?? 0);
+
+  if (!Number.isFinite(numeric)) {
+    return '0%';
+  }
+
+  const percent = numeric <= 1 ? numeric * 100 : numeric;
+
+  return `${Math.round(percent)}%`;
+}
+
+function fieldFromData(
+  data: AircraftData | null,
+  name: FieldName
+) {
+  if (!data) {
+    return null;
+  }
+
+  const fromFields = data.fields?.find(
+    (field) => field.name === name
+  );
+
+  if (fromFields) {
+    return fromFields;
+  }
+
+  return data[name] ?? null;
+}
+
+function legacyComponent(
+  data: AircraftData,
+  key: ComponentKey
+): ComponentField | null {
+  const legacy = data['Component List']?.find(
+    (item) => item.type === key
+  );
+
+  if (!legacy) {
+    return null;
+  }
+
+  return {
+    SerialNumber: legacy.serialNumber,
+    TSN: null,
+    CSN: null,
+    MonthlyUtil_Hrs: null,
+    MonthlyUtil_Cyc: null,
+    attachment_status: legacy.serialNumber ? 'Found' : 'Not found',
+    derate: null,
+    location: null,
+    extraction_confidence: legacy.confidence / 100,
+    raw_source_text: null,
+    available: Boolean(legacy.serialNumber),
+    TSN_raw: null,
+    CSN_raw: null,
+    MonthlyUtil_Hrs_raw: null,
+    MonthlyUtil_Cyc_raw: null,
+    source_file: null,
+    current_aircraft: null,
+    SerialNumber_bbox: null,
+    TSN_bbox: null,
+    CSN_bbox: null,
+    MonthlyUtil_Hrs_bbox: null,
+    MonthlyUtil_Cyc_bbox: null,
+    location_bbox: null,
+  };
+}
+
+function componentFromData(
+  data: AircraftData,
+  key: ComponentKey
+) {
+  return data.components?.[key] ?? legacyComponent(data, key);
 }
 
 function formatSavedResult(result: unknown) {
@@ -308,23 +476,17 @@ function formatSavedResult(result: unknown) {
     'Component List:',
   ];
 
-  const components = data['Component List'];
+  const extraction = data as AircraftData;
 
-  if (Array.isArray(components) && components.length > 0) {
-    for (const component of components) {
-      if (
-        typeof component === 'object' &&
-        component !== null
-      ) {
-        const item = component as ComponentField;
+  for (const row of COMPONENT_ROWS) {
+    const component = componentFromData(
+      extraction,
+      row.key
+    );
 
-        lines.push(
-          `- ${item.type} — Serial Number: ${item.serialNumber ?? 'Not found'} — Confidence: ${item.confidence ?? 0}%`
-        );
-      }
-    }
-  } else {
-    lines.push('- None found');
+    lines.push(
+      `- ${row.label} — MSN / Serial Number: ${component?.SerialNumber ?? 'Not found'} — Confidence: ${componentConfidence(component?.extraction_confidence)}`
+    );
   }
 
   return lines.join('\n');
@@ -401,6 +563,10 @@ function formatTraceEvent(event: TraceEvent) {
           return 'READING DOCUMENT\nInspecting nearby aircraft information.';
         }
 
+        if (tool === 'find_text_coordinates') {
+          return `FINDING COORDINATES: ${String(args.text ?? 'text')}`;
+        }
+
         if (tool === 'save_result') {
           return 'SAVING RESULT\nSaving extracted aircraft details.';
         }
@@ -442,6 +608,12 @@ function formatTraceEvent(event: TraceEvent) {
         )} characters from document offset ${String(
           details.offset ?? '0'
         )}.`;
+      }
+
+      if (tool === 'find_text_coordinates') {
+        return `[${time}] COORDINATES\nFound ${String(
+          details.matchCount ?? '0'
+        )} coordinate matches for ${String(details.text ?? 'text')}.`;
       }
 
       if (tool === 'save_result') {
@@ -868,77 +1040,138 @@ export default function Documentloader() {
                 AI / Pi Extraction
               </h3>
 
-              <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-5">
+                <h4 className="text-sm font-semibold uppercase tracking-wide text-gray-500">
+                  Aircraft Information
+                </h4>
 
-                <table className="w-full text-left">
+                <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {[
+                    {
+                      label: 'Aircraft Type',
+                      value:
+                        aircraftData.aircraft?.aircraft_type ??
+                        fieldFromData(aircraftData, 'Aircraft Type')?.value,
+                    },
+                    {
+                      label: 'MSN',
+                      value:
+                        aircraftData.aircraft?.msn ??
+                        fieldFromData(aircraftData, 'Aircraft Serial Number')?.value,
+                    },
+                    {
+                      label: 'Registration',
+                      value: aircraftData.aircraft?.registration,
+                    },
+                    {
+                      label: 'Reporting Period',
+                      value:
+                        aircraftData.aircraft?.reporting_period ??
+                        fieldFromData(aircraftData, 'Reporting Period')?.value,
+                    },
+                    {
+                      label: 'Source File',
+                      value:
+                        aircraftData.aircraft?.source_file ??
+                        file?.name,
+                    },
+                  ].map((item) => (
+                    <div key={item.label}>
+                      <p className="text-xs font-medium text-gray-400">
+                        {item.label}
+                      </p>
 
+                      <p className="mt-1 text-sm font-semibold text-gray-800">
+                        {displayValue(item.value)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-6 overflow-x-auto rounded-xl border border-gray-200 bg-white">
+                <table className="w-full text-left text-sm">
                   <thead className="bg-gray-50">
                     <tr>
-
-                      <th className="px-5 py-3 text-sm font-semibold text-gray-600">
-                        Field
-                      </th>
-
-                      <th className="px-5 py-3 text-sm font-semibold text-gray-600">
-                        Value
-                      </th>
-
-                      <th className="px-5 py-3 text-sm font-semibold text-gray-600">
-                        Confidence
-                      </th>
-
+                      {[
+                        'Component',
+                        'MSN / Serial Number',
+                        'TSN',
+                        'CSN',
+                        'Monthly Hours',
+                        'Monthly Cycles',
+                        'Status',
+                        'Location',
+                        'Confidence',
+                      ].map((header) => (
+                        <th
+                          key={header}
+                          className="whitespace-nowrap px-4 py-3 font-semibold text-gray-600"
+                        >
+                          {header}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
 
                   <tbody>
+                    {COMPONENT_ROWS.map((row) => {
+                      const component = componentFromData(
+                        aircraftData,
+                        row.key
+                      );
 
-                    {FIELD_NAMES.map(
-                      (name) => {
-                        const field =
-                          aircraftData[
-                            name
-                          ];
+                      return (
+                        <tr
+                          key={row.key}
+                          className="border-t border-gray-100"
+                        >
+                          <td className="whitespace-nowrap px-4 py-4 font-medium text-gray-700">
+                            {row.label}
+                          </td>
 
-                        return (
-                          <tr
-                            key={
-                              name
-                            }
-                            className="border-t border-gray-100"
-                          >
+                          <td className="whitespace-nowrap px-4 py-4 text-gray-900">
+                            {displayValue(component?.SerialNumber)}
+                          </td>
 
-                            <td className="px-5 py-4 font-medium text-gray-700">
-                              {
-                                name
-                              }
-                            </td>
+                          <td className="whitespace-nowrap px-4 py-4 text-gray-900">
+                            {displayValue(component?.TSN)}
+                          </td>
 
-                            <td className="px-5 py-4 text-gray-900">
-                              {field
-                                ?.value ||
-                                'Not found'}
-                            </td>
+                          <td className="whitespace-nowrap px-4 py-4 text-gray-900">
+                            {displayValue(component?.CSN)}
+                          </td>
 
-                            <td className="px-5 py-4">
+                          <td className="whitespace-nowrap px-4 py-4 text-gray-900">
+                            {displayValue(component?.MonthlyUtil_Hrs)}
+                          </td>
 
-                              <span className="rounded-full bg-green-100 px-3 py-1 text-sm font-medium text-green-700">
-                                {field
-                                  ?.confidence ??
-                                  0}
-                                %
-                              </span>
+                          <td className="whitespace-nowrap px-4 py-4 text-gray-900">
+                            {displayValue(component?.MonthlyUtil_Cyc)}
+                          </td>
 
-                            </td>
+                          <td className="whitespace-nowrap px-4 py-4 text-gray-900">
+                            {component?.available
+                              ? displayValue(component.attachment_status ?? 'Found')
+                              : 'Not found'}
+                          </td>
 
-                          </tr>
-                        );
-                      }
-                    )}
+                          <td className="whitespace-nowrap px-4 py-4 text-gray-900">
+                            {displayValue(component?.location)}
+                          </td>
 
+                          <td className="whitespace-nowrap px-4 py-4">
+                            <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-700">
+                              {componentConfidence(
+                                component?.extraction_confidence
+                              )}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
-
                 </table>
-
               </div>
             </div>
           )}
