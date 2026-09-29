@@ -1,0 +1,40 @@
+# Dependencies
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Next.js build output
+.next
+out
+
+# Local workspace/uploads/results/traces
+workspace
+
+# Environment/secrets
+.env
+.env.*
+!.env.example
+app/.env
+
+# Git and editor files
+.git
+.gitignore
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker files are still copied only if explicitly needed by build context
+Dockerfile
+.dockerignore
+
+# Misc caches/logs
+.eslintcache
+*.log
+coverage
