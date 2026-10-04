@@ -71,20 +71,22 @@ type AircraftData = {
     reporting_period?: string | number | null;
     source_file?: string | null;
   };
+
   fields?: Array<{
     name: string;
     value: string | number | null;
     confidence: number;
   }>;
+
   components?: Partial<Record<ComponentKey, ComponentField>>;
   savedAt?: string;
 } & Partial<Record<FieldName, ExtractedField>> & {
-  'Component List'?: Array<{
-    type: string;
-    serialNumber: string | null;
-    confidence: number;
-  }>;
-};
+    'Component List'?: Array<{
+      type: string;
+      serialNumber: string | null;
+      confidence: number;
+    }>;
+  };
 
 const COMPONENT_ROWS: Array<{
   key: ComponentKey;
@@ -129,9 +131,7 @@ type TraceContentBlock = {
   arguments?: unknown;
 };
 
-function formatTextValue(
-  value: unknown
-): string {
+function formatTextValue(value: unknown): string {
   if (value === null || value === undefined) {
     return 'none';
   }
@@ -171,9 +171,7 @@ function formatTextValue(
   return String(value);
 }
 
-function traceJson(
-  value: unknown
-) {
+function traceJson(value: unknown) {
   return formatTextValue(value);
 }
 
@@ -334,7 +332,11 @@ function formatSearchResult(
 }
 
 function displayValue(value: unknown) {
-  if (value === null || value === undefined || value === '') {
+  if (
+    value === null ||
+    value === undefined ||
+    value === ''
+  ) {
     return '-';
   }
 
@@ -383,7 +385,8 @@ function componentConfidence(value: unknown) {
     return '0%';
   }
 
-  const percent = numeric <= 1 ? numeric * 100 : numeric;
+  const percent =
+    numeric <= 1 ? numeric * 100 : numeric;
 
   return `${Math.round(percent)}%`;
 }
@@ -425,10 +428,13 @@ function legacyComponent(
     CSN: null,
     MonthlyUtil_Hrs: null,
     MonthlyUtil_Cyc: null,
-    attachment_status: legacy.serialNumber ? 'Found' : 'Not found',
+    attachment_status: legacy.serialNumber
+      ? 'Found'
+      : 'Not found',
     derate: null,
     location: null,
-    extraction_confidence: legacy.confidence / 100,
+    extraction_confidence:
+      legacy.confidence / 100,
     raw_source_text: null,
     available: Boolean(legacy.serialNumber),
     TSN_raw: null,
@@ -450,46 +456,197 @@ function componentFromData(
   data: AircraftData,
   key: ComponentKey
 ) {
-  return data.components?.[key] ?? legacyComponent(data, key);
+  return (
+    data.components?.[key] ??
+    legacyComponent(data, key)
+  );
 }
 
 function formatSavedResult(result: unknown) {
+  const lines = [
+    'RESULT SAVED',
+    'Aircraft extraction saved successfully.',
+  ];
+
   if (
     typeof result !== 'object' ||
     result === null
   ) {
-    return 'EXTRACTION COMPLETE';
+    return lines.join('\n');
   }
 
   const data = result as Record<string, unknown>;
-  const lines = [
-    'EXTRACTION COMPLETE',
-    '',
-    `Reporting Period: ${fieldValue(data, 'Reporting Period')}`,
-    `Aircraft Serial Number: ${fieldValue(data, 'Aircraft Serial Number')}`,
-    `Aircraft Type: ${fieldValue(data, 'Aircraft Type')}`,
-    `Total Month Cycles: ${fieldValue(data, 'Total Month Cycles')}`,
-    `Total Month Hours: ${fieldValue(data, 'Total Month Hours')}`,
-    `Total New Cycles: ${fieldValue(data, 'Total New Cycles')}`,
-    `Total New Time: ${fieldValue(data, 'Total New Time')}`,
-    '',
-    'Component List:',
-  ];
 
-  const extraction = data as AircraftData;
-
-  for (const row of COMPONENT_ROWS) {
-    const component = componentFromData(
-      extraction,
-      row.key
-    );
-
-    lines.push(
-      `- ${row.label} — MSN / Serial Number: ${component?.SerialNumber ?? 'Not found'} — Confidence: ${componentConfidence(component?.extraction_confidence)}`
-    );
-  }
+  lines.push(
+    `Reporting Period: ${fieldValue(
+      data,
+      'Reporting Period'
+    )}`,
+    `Aircraft Serial Number: ${fieldValue(
+      data,
+      'Aircraft Serial Number'
+    )}`,
+    `Aircraft Type: ${fieldValue(
+      data,
+      'Aircraft Type'
+    )}`
+  );
 
   return lines.join('\n');
+}
+
+function formatToolStarted(
+  data: Record<string, unknown>
+) {
+  const tool = String(data.tool ?? 'tool');
+
+  if (tool === 'grep_document') {
+    return `SEARCHING\nLooking for ${String(
+      data.query ?? 'document'
+    )}`;
+  }
+
+  if (tool === 'read_document') {
+    const offset = data.offset;
+    const limit = data.limit;
+    const range =
+      offset !== undefined || limit !== undefined
+        ? `\nOffset: ${String(offset ?? 0)}; limit: ${String(
+            limit ?? 'default'
+          )}`
+        : '';
+
+    return `READING DOCUMENT\nInspecting nearby aircraft information.${range}`;
+  }
+
+  if (tool === 'find_text_coordinates') {
+    return `FINDING COORDINATES\nLooking for coordinates for ${String(
+      data.text ?? 'text'
+    )}`;
+  }
+
+  if (tool === 'save_result') {
+    return 'SAVING RESULT\nSaving extracted aircraft details.';
+  }
+
+  return `USING TOOL\n${tool}`;
+}
+
+function formatToolCompleted(
+  data: Record<string, unknown>
+) {
+  const tool = String(data.tool ?? 'tool');
+
+  if (data.error) {
+    return `TOOL FAILED\n${String(data.error)}`;
+  }
+
+  if (tool === 'grep_document') {
+    return formatSearchResult(data);
+  }
+
+  if (tool === 'read_document') {
+    return `DOCUMENT READ\nRead ${String(
+      data.returnedCharacters ?? '0'
+    )} characters from document offset ${String(
+      data.offset ?? '0'
+    )}.`;
+  }
+
+  if (tool === 'find_text_coordinates') {
+    return `COORDINATES\nFound ${String(
+      data.matchCount ?? '0'
+    )} coordinate matches for "${String(
+      data.text ?? 'text'
+    )}".`;
+  }
+
+  if (tool === 'save_result') {
+    return 'RESULT SAVED\nAircraft extraction saved successfully.';
+  }
+
+  return `TOOL COMPLETE\n${tool} completed.`;
+}
+
+function formatTraceList(
+  label: string,
+  value: unknown
+) {
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+
+  const items = value
+    .map((item) => shortPreview(item))
+    .filter(Boolean);
+
+  if (items.length === 0) {
+    return null;
+  }
+
+  return [label, ...items.map((item) => `- ${item}`)].join('\n');
+}
+
+function formatAgentTrace(
+  data: Record<string, unknown>
+) {
+  const lines = ['AGENT TRACE'];
+
+  if (data.objective) {
+    lines.push(`Objective: ${String(data.objective)}`);
+  }
+
+  const evidence = formatTraceList(
+    'Evidence:',
+    data.evidence
+  );
+
+  if (evidence) {
+    lines.push(evidence);
+  }
+
+  const missing = formatTraceList(
+    'Missing:',
+    data.missing
+  );
+
+  if (missing) {
+    lines.push(missing);
+  }
+
+  const action =
+    typeof data.action === 'object' && data.action !== null
+      ? (data.action as Record<string, unknown>)
+      : null;
+
+  if (action?.tool) {
+    const details = [
+      `Tool: ${String(action.tool)}`,
+      action.query ? `query: ${String(action.query)}` : null,
+      action.offset !== undefined
+        ? `offset: ${String(action.offset)}`
+        : null,
+      action.limit !== undefined
+        ? `limit: ${String(action.limit)}`
+        : null,
+    ].filter(Boolean);
+
+    lines.push(`Action: ${details.join('; ')}`);
+  }
+
+  if (data.reason) {
+    lines.push(`Reason: ${String(data.reason)}`);
+  }
+
+  if (data.uncertainty) {
+    lines.push(`Uncertainty: ${String(data.uncertainty)}`);
+  }
+
+  if (data.next) {
+    lines.push(`Next: ${String(data.next)}`);
+  }
+
+  return lines.length > 1 ? lines.join('\n') : null;
 }
 
 function formatTime(timestamp: string) {
@@ -508,7 +665,9 @@ function formatTraceEvent(event: TraceEvent) {
   const data = eventData(event);
 
   if (event.type === 'upload.ready') {
-    const filename = String(data.filename ?? 'document');
+    const filename = String(
+      data.filename ?? 'document'
+    );
 
     return `[${time}] UPLOAD READY\nUploaded ${filename}`;
   }
@@ -536,7 +695,11 @@ function formatTraceEvent(event: TraceEvent) {
   }
 
   if (event.type === 'model.started') {
-    return null;
+    return `[${time}] MODEL STARTED\nModel: ${String(
+      data.provider ?? ''
+    )}/${String(data.model ?? '')}\nMessages: ${String(
+      data.messages ?? '0'
+    )}`;
   }
 
   if (event.type === 'message') {
@@ -544,19 +707,24 @@ function formatTraceEvent(event: TraceEvent) {
     const role = String(message.role ?? '');
 
     if (role === 'assistant') {
-      const visibleText = textBlocksFromMessage(message);
+      const visibleText =
+        textBlocksFromMessage(message);
 
       if (visibleText) {
         return `[${time}]\n${visibleText}`;
       }
 
-      const toolCalls = toolCallsFromTraceMessage(message);
+      const toolCalls =
+        toolCallsFromTraceMessage(message);
+
       const toolTexts = toolCalls.map((block) => {
         const tool = String(block.name ?? '');
         const args = toolArguments(block);
 
         if (tool === 'grep_document') {
-          return `SEARCHING: ${String(args.query ?? 'document')}`;
+          return `SEARCHING\nLooking for ${String(
+            args.query ?? 'document'
+          )}`;
         }
 
         if (tool === 'read_document') {
@@ -564,7 +732,9 @@ function formatTraceEvent(event: TraceEvent) {
         }
 
         if (tool === 'find_text_coordinates') {
-          return `FINDING COORDINATES: ${String(args.text ?? 'text')}`;
+          return `FINDING COORDINATES\nLooking for coordinates for ${String(
+            args.text ?? 'text'
+          )}`;
         }
 
         if (tool === 'save_result') {
@@ -588,18 +758,24 @@ function formatTraceEvent(event: TraceEvent) {
 
       if (message.isError) {
         return `[${time}] TOOL ERROR\n${String(
-          message.error ?? 'Tool execution failed.'
+          message.error ??
+            'Tool execution failed.'
         )}`;
       }
 
       const details =
         typeof message.details === 'object' &&
         message.details !== null
-          ? (message.details as Record<string, unknown>)
+          ? (message.details as Record<
+              string,
+              unknown
+            >)
           : {};
 
       if (tool === 'grep_document') {
-        return `[${time}] ${formatSearchResult(details)}`;
+        return `[${time}] ${formatSearchResult(
+          details
+        )}`;
       }
 
       if (tool === 'read_document') {
@@ -613,7 +789,9 @@ function formatTraceEvent(event: TraceEvent) {
       if (tool === 'find_text_coordinates') {
         return `[${time}] COORDINATES\nFound ${String(
           details.matchCount ?? '0'
-        )} coordinate matches for ${String(details.text ?? 'text')}.`;
+        )} coordinate matches for ${String(
+          details.text ?? 'text'
+        )}.`;
       }
 
       if (tool === 'save_result') {
@@ -623,23 +801,29 @@ function formatTraceEvent(event: TraceEvent) {
       return `[${time}] TOOL RESULT\n${tool} completed.`;
     }
 
-    return `[${time}] MESSAGE\n${role || 'Received model message.'}`;
+    return `[${time}] MESSAGE\n${
+      role || 'Received model message.'
+    }`;
   }
 
   if (event.type === 'agent.trace') {
-    return null;
+    const formatted = formatAgentTrace(data);
+
+    return formatted ? `[${time}] ${formatted}` : null;
   }
 
   if (event.type === 'tool.started') {
-    return null;
+    return `[${time}] ${formatToolStarted(data)}`;
   }
 
   if (event.type === 'tool.completed') {
-    return null;
+    return `[${time}] ${formatToolCompleted(data)}`;
   }
 
   if (event.type === 'result.saved') {
-    return `[${time}] ${formatSavedResult(data.result)}`;
+    return `[${time}] ${formatSavedResult(
+      data.result
+    )}`;
   }
 
   if (event.type === 'session.completed') {
@@ -652,13 +836,14 @@ function formatTraceEvent(event: TraceEvent) {
     )}`;
   }
 
-  return `[${time}] ${event.type}\n${formatTextValue(data)}`;
+  return `[${time}] ${event.type}\n${formatTextValue(
+    data
+  )}`;
 }
 
 export default function Documentloader() {
-  const [file, setFile] = useState<File | null>(
-    null
-  );
+  const [file, setFile] =
+    useState<File | null>(null);
 
   const [workspaceId, setWorkspaceId] =
     useState('');
@@ -686,6 +871,11 @@ export default function Documentloader() {
 
     setFile(selectedFile);
     setWorkspaceId('');
+    window.dispatchEvent(
+      new CustomEvent('rrweb:workspace-ready', {
+        detail: { workspaceId: '' },
+      })
+    );
     setAircraftData(null);
     setTraceEvents([]);
     setError('');
@@ -694,10 +884,7 @@ export default function Documentloader() {
     try {
       const formData = new FormData();
 
-      formData.append(
-        'file',
-        selectedFile
-      );
+      formData.append('file', selectedFile);
 
       const response = await fetch(
         '/api/read-document',
@@ -716,8 +903,13 @@ export default function Documentloader() {
         );
       }
 
-      setWorkspaceId(
-        data.workspaceId
+      setWorkspaceId(data.workspaceId);
+      window.dispatchEvent(
+        new CustomEvent('rrweb:workspace-ready', {
+          detail: {
+            workspaceId: data.workspaceId,
+          },
+        })
       );
 
       setTraceEvents([
@@ -725,13 +917,10 @@ export default function Documentloader() {
           type: 'upload.ready',
           id: crypto.randomUUID().slice(0, 8),
           parentId: null,
-          timestamp:
-            new Date().toISOString(),
+          timestamp: new Date().toISOString(),
           data: {},
-          workspaceId:
-            data.workspaceId,
-          filename:
-            data.filename,
+          workspaceId: data.workspaceId,
+          filename: data.filename,
         },
       ]);
     } catch (err) {
@@ -750,7 +939,6 @@ export default function Documentloader() {
       setError(
         'Please upload a document first.'
       );
-
       return;
     }
 
@@ -790,8 +978,7 @@ export default function Documentloader() {
         );
       }
 
-      const decoder =
-        new TextDecoder();
+      const decoder = new TextDecoder();
 
       let buffer = '';
 
@@ -803,49 +990,40 @@ export default function Documentloader() {
           break;
         }
 
-        buffer += decoder.decode(
-          value,
-          {
-            stream: true,
-          }
-        );
+        buffer += decoder.decode(value, {
+          stream: true,
+        });
 
-        const lines =
-          buffer.split('\n');
+        const lines = buffer.split('\n');
 
-        buffer =
-          lines.pop() ?? '';
+        buffer = lines.pop() ?? '';
 
         for (const line of lines) {
           if (!line.trim()) {
             continue;
           }
 
-          const event =
-            JSON.parse(
-              line
-            ) as TraceEvent;
+          const event = JSON.parse(
+            line
+          ) as TraceEvent;
 
-          setTraceEvents(
-            (current) => [
-              ...current,
-              event,
-            ]
-          );
+          setTraceEvents((current) => [
+            ...current,
+            event,
+          ]);
 
           if (
-            event.type ===
-            'result.saved'
+            event.type === 'result.saved'
           ) {
             setAircraftData(
               (event.result ??
-                event.data?.result) as AircraftData
+                event.data
+                  ?.result) as AircraftData
             );
           }
 
           if (
-            event.type ===
-            'session.failed'
+            event.type === 'session.failed'
           ) {
             setError(
               String(
@@ -870,7 +1048,6 @@ export default function Documentloader() {
 
   return (
     <div className="w-full max-w-4xl">
-
       <label
         className="
           flex min-h-64 cursor-pointer
@@ -927,8 +1104,7 @@ export default function Documentloader() {
       )}
 
       {file && workspaceId && (
-        <div className="mt-5 rounded-xl bg-green-50 p-4">
-
+        <div className="rr-mask mt-5 rounded-xl bg-green-50 p-4">
           <p className="font-medium text-green-700">
             Document ready
           </p>
@@ -938,10 +1114,8 @@ export default function Documentloader() {
           </p>
 
           <p className="mt-2 break-all text-xs text-green-500">
-            Workspace:{' '}
-            {workspaceId}
+            Workspace: {workspaceId}
           </p>
-
         </div>
       )}
 
@@ -953,22 +1127,19 @@ export default function Documentloader() {
 
       {workspaceId && (
         <div className="mt-8 rounded-2xl bg-white p-6 shadow-sm">
-
           <h2 className="text-xl font-semibold text-gray-700">
             Extract Aircraft Data
           </h2>
 
           <p className="mt-1 text-sm text-gray-400">
-            Extract structured aircraft details from the document
+            Extract structured aircraft details
+            from the document
           </p>
 
           <button
-            onClick={
-              extractAircraftData
-            }
+            onClick={extractAircraftData}
             disabled={
-              extracting ||
-              !workspaceId
+              extracting || !workspaceId
             }
             className="
               mt-4
@@ -989,23 +1160,16 @@ export default function Documentloader() {
           </button>
 
           {traceEvents.length > 0 && (
-            <div className="mt-6 rounded-xl bg-gray-950 p-5 text-white">
-
+            <div className="rr-block mt-6 rounded-xl bg-gray-950 p-5 text-white">
               <h3 className="mb-4 text-lg font-semibold">
                 Pi Session Logs
               </h3>
 
               <div className="max-h-96 overflow-y-auto">
-
                 {traceEvents.map(
-                  (
-                    event,
-                    index
-                  ) => {
+                  (event, index) => {
                     const formatted =
-                      formatTraceEvent(
-                        event
-                      );
+                      formatTraceEvent(event);
 
                     if (!formatted) {
                       return null;
@@ -1028,19 +1192,17 @@ export default function Documentloader() {
                     );
                   }
                 )}
-
               </div>
             </div>
           )}
 
           {aircraftData && (
             <div className="mt-6">
-
               <h3 className="mb-4 text-lg font-semibold text-gray-700">
                 AI / Pi Extraction
               </h3>
 
-              <div className="rounded-xl border border-gray-200 bg-gray-50 p-5">
+              <div className="rr-mask rounded-xl border border-gray-200 bg-gray-50 p-5">
                 <h4 className="text-sm font-semibold uppercase tracking-wide text-gray-500">
                   Aircraft Information
                 </h4>
@@ -1048,48 +1210,71 @@ export default function Documentloader() {
                 <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                   {[
                     {
-                      label: 'Aircraft Type',
+                      label:
+                        'Aircraft Type',
                       value:
-                        aircraftData.aircraft?.aircraft_type ??
-                        fieldFromData(aircraftData, 'Aircraft Type')?.value,
+                        aircraftData.aircraft
+                          ?.aircraft_type ??
+                        fieldFromData(
+                          aircraftData,
+                          'Aircraft Type'
+                        )?.value,
                     },
                     {
                       label: 'MSN',
                       value:
-                        aircraftData.aircraft?.msn ??
-                        fieldFromData(aircraftData, 'Aircraft Serial Number')?.value,
+                        aircraftData.aircraft
+                          ?.msn ??
+                        fieldFromData(
+                          aircraftData,
+                          'Aircraft Serial Number'
+                        )?.value,
                     },
                     {
-                      label: 'Registration',
-                      value: aircraftData.aircraft?.registration,
-                    },
-                    {
-                      label: 'Reporting Period',
+                      label:
+                        'Registration',
                       value:
-                        aircraftData.aircraft?.reporting_period ??
-                        fieldFromData(aircraftData, 'Reporting Period')?.value,
+                        aircraftData.aircraft
+                          ?.registration,
                     },
                     {
-                      label: 'Source File',
+                      label:
+                        'Reporting Period',
                       value:
-                        aircraftData.aircraft?.source_file ??
+                        aircraftData.aircraft
+                          ?.reporting_period ??
+                        fieldFromData(
+                          aircraftData,
+                          'Reporting Period'
+                        )?.value,
+                    },
+                    {
+                      label:
+                        'Source File',
+                      value:
+                        aircraftData.aircraft
+                          ?.source_file ??
                         file?.name,
                     },
                   ].map((item) => (
-                    <div key={item.label}>
+                    <div
+                      key={item.label}
+                    >
                       <p className="text-xs font-medium text-gray-400">
                         {item.label}
                       </p>
 
                       <p className="mt-1 text-sm font-semibold text-gray-800">
-                        {displayValue(item.value)}
+                        {displayValue(
+                          item.value
+                        )}
                       </p>
                     </div>
                   ))}
                 </div>
               </div>
 
-              <div className="mt-6 overflow-x-auto rounded-xl border border-gray-200 bg-white">
+              <div className="rr-mask mt-6 overflow-x-auto rounded-xl border border-gray-200 bg-white">
                 <table className="w-full text-left text-sm">
                   <thead className="bg-gray-50">
                     <tr>
@@ -1115,70 +1300,86 @@ export default function Documentloader() {
                   </thead>
 
                   <tbody>
-                    {COMPONENT_ROWS.map((row) => {
-                      const component = componentFromData(
-                        aircraftData,
-                        row.key
-                      );
+                    {COMPONENT_ROWS.map(
+                      (row) => {
+                        const component =
+                          componentFromData(
+                            aircraftData,
+                            row.key
+                          );
 
-                      return (
-                        <tr
-                          key={row.key}
-                          className="border-t border-gray-100"
-                        >
-                          <td className="whitespace-nowrap px-4 py-4 font-medium text-gray-700">
-                            {row.label}
-                          </td>
+                        return (
+                          <tr
+                            key={row.key}
+                            className="border-t border-gray-100"
+                          >
+                            <td className="whitespace-nowrap px-4 py-4 font-medium text-gray-700">
+                              {row.label}
+                            </td>
 
-                          <td className="whitespace-nowrap px-4 py-4 text-gray-900">
-                            {displayValue(component?.SerialNumber)}
-                          </td>
-
-                          <td className="whitespace-nowrap px-4 py-4 text-gray-900">
-                            {displayValue(component?.TSN)}
-                          </td>
-
-                          <td className="whitespace-nowrap px-4 py-4 text-gray-900">
-                            {displayValue(component?.CSN)}
-                          </td>
-
-                          <td className="whitespace-nowrap px-4 py-4 text-gray-900">
-                            {displayValue(component?.MonthlyUtil_Hrs)}
-                          </td>
-
-                          <td className="whitespace-nowrap px-4 py-4 text-gray-900">
-                            {displayValue(component?.MonthlyUtil_Cyc)}
-                          </td>
-
-                          <td className="whitespace-nowrap px-4 py-4 text-gray-900">
-                            {component?.available
-                              ? displayValue(component.attachment_status ?? 'Found')
-                              : 'Not found'}
-                          </td>
-
-                          <td className="whitespace-nowrap px-4 py-4 text-gray-900">
-                            {displayValue(component?.location)}
-                          </td>
-
-                          <td className="whitespace-nowrap px-4 py-4">
-                            <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-700">
-                              {componentConfidence(
-                                component?.extraction_confidence
+                            <td className="whitespace-nowrap px-4 py-4 text-gray-900">
+                              {displayValue(
+                                component?.SerialNumber
                               )}
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
+                            </td>
+
+                            <td className="whitespace-nowrap px-4 py-4 text-gray-900">
+                              {displayValue(
+                                component?.TSN
+                              )}
+                            </td>
+
+                            <td className="whitespace-nowrap px-4 py-4 text-gray-900">
+                              {displayValue(
+                                component?.CSN
+                              )}
+                            </td>
+
+                            <td className="whitespace-nowrap px-4 py-4 text-gray-900">
+                              {displayValue(
+                                component?.MonthlyUtil_Hrs
+                              )}
+                            </td>
+
+                            <td className="whitespace-nowrap px-4 py-4 text-gray-900">
+                              {displayValue(
+                                component?.MonthlyUtil_Cyc
+                              )}
+                            </td>
+
+                            <td className="whitespace-nowrap px-4 py-4 text-gray-900">
+                              {component?.available
+                                ? displayValue(
+                                    component.attachment_status ??
+                                      'Found'
+                                  )
+                                : 'Not found'}
+                            </td>
+
+                            <td className="whitespace-nowrap px-4 py-4 text-gray-900">
+                              {displayValue(
+                                component?.location
+                              )}
+                            </td>
+
+                            <td className="whitespace-nowrap px-4 py-4">
+                              <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-700">
+                                {componentConfidence(
+                                  component?.extraction_confidence
+                                )}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      }
+                    )}
                   </tbody>
                 </table>
               </div>
             </div>
           )}
-
         </div>
       )}
-
     </div>
   );
 }

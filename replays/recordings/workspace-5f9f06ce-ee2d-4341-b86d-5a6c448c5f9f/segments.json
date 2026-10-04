@@ -1,0 +1,10 @@
+[
+  {
+    "segmentId": 1,
+    "path": "/",
+    "startTs": 1790820348396,
+    "endTs": 1790820528064,
+    "firstChunk": 1,
+    "lastChunk": 30
+  }
+]

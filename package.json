@@ -10,10 +10,13 @@
   "dependencies": {
     "@earendil-works/pi-ai": "^0.87.1",
     "@llamaindex/liteparse": "^2.14.7",
+    "@rrweb/record": "^2.1.6",
+    "@rrweb/replay": "^2.1.6",
     "mammoth": "^1.12.3",
     "next": "16.3.6",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "rrweb-player": "^2.1.6",
     "zod": "^4.6.5"
   },
   "devDependencies": {
