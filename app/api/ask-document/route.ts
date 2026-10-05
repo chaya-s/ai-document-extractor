@@ -35,6 +35,8 @@ models.setProvider(
 
 const MAX_TOOL_CALLS = 40;
 
+const MAX_NO_TOOL_RETRIES = 2;
+
 const THINKING_LEVEL = 'high';
 
 type TraceEventType =
@@ -756,6 +758,8 @@ export async function POST(
           let savedResult:
             unknown = null;
 
+          let noToolRetryCount = 0;
+
           while (
             toolCallCount <
             MAX_TOOL_CALLS
@@ -908,10 +912,73 @@ export async function POST(
               toolCalls.length ===
               0
             ) {
-              throw new Error(
-                'The model did not call a document tool.'
+              noToolRetryCount++;
+
+              if (
+                noToolRetryCount >
+                MAX_NO_TOOL_RETRIES
+              ) {
+                throw new Error(
+                  'The model did not call a document tool.'
+                );
+              }
+
+              const reminder =
+                noToolRetryCount === 1
+                  ? 'You wrote that you are saving the extraction, but you did not call save_result. You must now call exactly one available document tool. If extraction is complete, call save_result with the full structured aircraft extraction. Do not reply with text only.'
+                  : 'You still did not call a tool. Call save_result now if the extraction is complete, otherwise call grep_document or read_document. Text-only replies are not allowed.';
+
+              await trace(
+                'agent.trace',
+                {
+                  objective:
+                    'Recover from a text-only model response.',
+
+                  evidence: [],
+
+                  missing: [
+                    'A document tool call is required to continue.',
+                  ],
+
+                  action: {
+                    tool: null,
+                  },
+
+                  reason:
+                    'The model returned assistant text without a tool call.',
+
+                  uncertainty: 'none',
+
+                  next:
+                    'Ask the model to call save_result or another document tool.',
+                }
               );
+
+              context.messages.push(
+                {
+                  role: 'user',
+
+                  content: reminder,
+
+                  timestamp:
+                    Date.now(),
+                }
+              );
+
+              session.context =
+                serializableContext(
+                  context
+                );
+
+              session =
+                await writeSession(
+                  session
+                );
+
+              continue;
             }
+
+            noToolRetryCount = 0;
 
             for (
               const toolCall
