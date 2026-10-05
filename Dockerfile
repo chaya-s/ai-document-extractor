@@ -33,6 +33,7 @@ ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 ENV WORKSPACE_DIR=/home/nextjs/workspace
 ENV WEBSITES_ENABLE_APP_SERVICE_STORAGE=true
+ENV WORKSPACE_ROOT=/app/workspace
 
 RUN groupadd --system --gid 1001 nodejs \
   && useradd --system --uid 1001 --gid nodejs nextjs \
